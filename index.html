@@ -1,642 +1,136 @@
 <!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>67 Hand Movement Counter</title>
-  
-  <!-- Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <!-- FontAwesome Icons -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  
-  <!-- Canvas Confetti -->
-  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
-  
-  <!-- MediaPipe Hands & Camera Utils -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
-
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800;900&family=Noto+Sans+JP:wght@400;700;900&display=swap');
-    
-    body {
-      font-family: 'Outfit', 'Noto Sans JP', sans-serif;
-      background-color: #0f172a;
-      color: #f8fafc;
-    }
-
-    .mirror {
-      transform: scaleX(-1);
-    }
-
-    .gradient-text {
-      background: linear-gradient(135deg, #f59e0b 0%, #ec4899 50%, #8b5cf6 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .glass-panel {
-      background: rgba(30, 41, 59, 0.7);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .pulse-glow {
-      box-shadow: 0 0 25px rgba(245, 158, 11, 0.4);
-    }
-  </style>
+<html lang="ja"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>67 Hand Counter</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Noto Sans JP",sans-serif;overflow:hidden}
+#stage{position:fixed;inset:0}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1) scale(var(--z,1))}
+#msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000c;z-index:5;color:#f59e0b;font-weight:700}
+#hud{position:fixed;top:0;left:0;right:0;padding:calc(8px + env(safe-area-inset-top,0px)) 14px 0;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;z-index:2}
+#hud button{pointer-events:auto}
+#num{font-size:min(30vw,200px);font-weight:900;line-height:1;text-shadow:0 4px 24px #000;transition:color .08s}
+#num.hit{color:#f59e0b}
+.pill{background:#0009;border-radius:99px;padding:4px 12px;font-size:13px;margin:2px 2px 2px 0;display:inline-block}
+#panel{position:fixed;left:0;right:0;bottom:0;z-index:3;padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));background:#0f172ad9;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:13px;transition:transform .2s}
+#panel.hide{transform:translateY(100%)}
+button{font:inherit;font-size:13px;background:#334155;color:#fff;border:0;border-radius:8px;padding:8px 12px}
+button.on{background:#f59e0b;color:#000;font-weight:700}
+input[type=range]{vertical-align:middle;width:110px}
+</style>
+<script>
+/* カメラは最優先で即起動（他の読み込みを待たない） */
+const openCam=()=>navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:60}},audio:false});
+const camP=openCam();
+</script>
+<script id="hs" async src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
-<body class="min-h-screen flex flex-col justify-between overflow-x-hidden selection:bg-amber-500 selection:text-slate-900">
-
-  <!-- Header -->
-  <header class="w-full glass-panel sticky top-0 z-50 px-4 py-3 border-b border-slate-800">
-    <div class="max-w-6xl mx-auto flex items-center justify-between">
-      <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-pink-500 flex items-center justify-center font-black text-xl text-slate-900 shadow-lg">
-          67
-        </div>
-        <div>
-          <h1 class="text-xl font-black tracking-wider gradient-text">67 HAND COUNTER</h1>
-          <p class="text-xs text-slate-400">ネットミーム「手上下」モーションカウンター</p>
-        </div>
-      </div>
-
-      <div class="flex items-center space-x-2">
-        <button id="soundToggleBtn" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition flex items-center space-x-1 border border-slate-700" title="サウンド切り替え">
-          <i id="soundIcon" class="fas fa-volume-up"></i>
-        </button>
-        <button id="helpBtn" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition border border-slate-700" title="使い方">
-          <i class="fas fa-question-circle"></i>
-        </button>
-      </div>
-    </div>
-  </header>
-
-  <!-- Main Container -->
-  <main class="max-w-7xl w-full mx-auto p-3 md:p-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6">
-    
-    <!-- Left Column: Camera Viewport (Expanded Size) -->
-    <div class="lg:col-span-8 flex flex-col space-y-4">
-      <div class="glass-panel rounded-2xl p-3 md:p-4 relative overflow-hidden flex flex-col items-center justify-center min-h-[420px] md:min-h-[520px]">
-        
-        <!-- Camera Viewport Container (Enlarged & Wide) -->
-        <div id="canvasContainer" class="relative w-full aspect-[16/10] md:aspect-[16/9] rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl flex items-center justify-center">
-          
-          <video id="webcam" class="absolute inset-0 w-full h-full object-cover mirror" autoplay playsinline></video>
-          <canvas id="output_canvas" class="absolute inset-0 w-full h-full object-cover mirror"></canvas>
-
-          <!-- Loading Overlay -->
-          <div id="loadingOverlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center z-20 space-y-3 transition-opacity duration-300">
-            <div class="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
-            <p id="loadingText" class="text-sm font-semibold text-amber-400">カメラを即時起動中...</p>
-          </div>
-
-          <!-- Live Status Indicator -->
-          <div class="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
-            <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
-            <span id="statusText" class="font-medium text-slate-300">認識準備中</span>
-          </div>
-
-          <!-- Hands Detected Indicator -->
-          <div class="absolute top-3 right-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
-            <i class="fas fa-hand text-amber-400"></i>
-            <span id="handCountText" class="font-bold text-amber-400">0 手検出</span>
-          </div>
-
-          <!-- Gesture Target Helper Overlay -->
-          <div id="gestureGuide" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-slate-900/85 px-4 py-2 rounded-xl border border-amber-500/30 text-center backdrop-blur-md transition-all">
-            <p id="guideInstruction" class="text-xs text-amber-300 font-semibold">カメラの前で手を高速で上下に振ってください</p>
-          </div>
-        </div>
-
-        <!-- Camera Controls -->
-        <div class="w-full flex items-center justify-between mt-3 px-1 text-xs text-slate-400">
-          <div class="flex items-center space-x-3">
-            <label class="inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="showSkeleton" class="sr-only peer" checked>
-              <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 relative"></div>
-              <span class="ml-2 font-medium text-slate-300">骨格・波形描画</span>
-            </label>
-          </div>
-          <button id="toggleCameraBtn" class="hover:text-amber-400 transition flex items-center space-x-1">
-            <i class="fas fa-sync-alt"></i>
-            <span>カメラ再接続</span>
-          </button>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- Right Column: Counter Dashboard & Settings -->
-    <div class="lg:col-span-4 flex flex-col space-y-4">
-
-      </div>
-    </div>
-
-    <!-- Right Column: Counter Dashboard & Settings -->
-    <div class="lg:col-span-5 flex flex-col space-y-4">
-      
-      <!-- Counter Card -->
-      <div id="counterCard" class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden pulse-glow transition-all duration-150">
-        <div class="text-xs font-black uppercase tracking-widest text-amber-400 mb-1">TOTAL "67" COUNT</div>
-        
-        <!-- Big Number -->
-        <div id="countDisplay" class="text-7xl md:text-8xl font-black tracking-tight my-2 text-white drop-shadow-lg transition-transform duration-100 scale-100">
-          0
-        </div>
-
-        <!-- Rhythm Speed (BPM / Reps per min) -->
-        <div class="flex items-center justify-center space-x-4 mt-2 text-slate-400 text-sm">
-          <div class="flex items-center space-x-1 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700">
-            <i class="fas fa-bolt text-amber-400"></i>
-            <span>スピード: <strong id="speedDisplay" class="text-white">0</strong> bpm</span>
-          </div>
-          <div class="flex items-center space-x-1 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700">
-            <i class="fas fa-fire text-pink-500"></i>
-            <span>コンボ: <strong id="comboDisplay" class="text-white">0</strong></span>
-          </div>
-        </div>
-
-        <!-- Reset Button -->
-        <button id="resetBtn" class="mt-5 w-full py-3 px-4 bg-gradient-to-r from-red-500/80 to-pink-600/80 hover:from-red-500 hover:to-pink-600 text-white font-bold rounded-xl transition shadow-lg flex items-center justify-center space-x-2 border border-red-400/30">
-          <i class="fas fa-redo-alt"></i>
-          <span>カウントリセット</span>
-        </button>
-      </div>
-
-      <!-- Mode Selection & Controls -->
-      <div class="glass-panel rounded-2xl p-5 space-y-4">
-        <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
-          <i class="fas fa-sliders-h text-amber-400"></i>
-          <span>高速判定設定</span>
-        </h3>
-
-        <!-- Mode Switches -->
-        <div class="grid grid-cols-2 gap-2 p-1 bg-slate-900/60 rounded-xl border border-slate-800">
-          <button id="mode67Btn" class="py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow">
-            <i class="fas fa-hands text-sm"></i>
-            <span>67 交互ミーム</span>
-          </button>
-          <button id="modeSingleBtn" class="py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800">
-            <i class="fas fa-hand-paper text-sm"></i>
-            <span>シンプル上下</span>
-          </button>
-        </div>
-
-        <!-- Sensitivity Sliders -->
-        <div class="space-y-3 pt-2">
-          <div>
-            <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
-              <span>動かす振り幅（感度）:</span>
-              <span id="sensitivityVal" class="text-amber-400">超音速・微小振り対応 (爆速)</span>
-            </div>
-            <input type="range" id="sensitivitySlider" min="1" max="10" value="2" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
-            <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
-              <span>手元爆速・極小振り (高感度)</span>
-              <span>大振り・誤反応防止 (低感度)</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-    </div>
-  </main>
-
-  <!-- Help Modal -->
-  <div id="helpModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
-    <div class="glass-panel max-w-md w-full rounded-2xl p-6 space-y-4 border border-slate-700 shadow-2xl">
-      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
-        <h3 class="text-lg font-bold text-amber-400 flex items-center space-x-2">
-          <i class="fas fa-info-circle"></i>
-          <span>使い方・67ミームの動かし方</span>
-        </h3>
-        <button id="closeHelpBtn" class="text-slate-400 hover:text-white text-xl">&times;</button>
-      </div>
-      
-      <div class="space-y-3 text-sm text-slate-300 leading-relaxed">
-        <p><strong class="text-amber-400">【67 交互ミームモード】</strong><br>両手を画面に映し、シーソー（天秤）のように片手を上げながらもう片手を下げる動作を交互に行うとカウントされます！</p>
-        <p><strong class="text-amber-400">【シンプル上下モード】</strong><br>片手または両手を一度画面の上のラインまで上げてから、下のラインまで下げる動作で1カウントされます。</p>
-        <p class="text-xs bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-slate-400">
-          ※ カウントされない場合は、部屋を明るくするか「判定ライン」スライダーで上限・下限を調節してください。
-        </p>
-      </div>
-
-      <button id="modalOkBtn" class="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition">
-        理解しました！
-      </button>
-    </div>
-  </div>
-
-  <!-- Footer -->
-  <footer class="w-full py-3 text-center text-xs text-slate-500 border-t border-slate-800/80">
-    <p>Powered by MediaPipe Hands & Web Audio API — 67 Meme Counter</p>
-  </footer>
-
-  <script>
-    /* Application State Variables */
-    let count = 0;
-    let combo = 0;
-    let currentMode = '67'; // '67' or 'single'
-    let isSoundOn = true;
-    let lastCountTime = 0;
-    let speedBpm = 0;
-    const minCountIntervalMs = 20; // Super high-speed interval (allows up to 50 counts/sec)
-
-    // Dynamic Peak-Valley Motion Tracking State
-    let swingDeltaThreshold = 0.02; // 2% screen amplitude default for rapid motion
-    let swingState = {
-      direction: 'NONE', // 'UP', 'DOWN', or 'NONE'
-      extremeY: 0
-    };
-
-    // Velocity state for instantaneous acceleration reversal detection
-    let prevMotionY = 0;
-    let velocityY = 0;
-
-    // Motion waveform history for visual feedback
-    let motionHistory = [];
-    let triggerVisualTimeout = null;
-
-    // Pre-warming & Direct Stream State
-    let isModelReady = false;
-    let isProcessingFrame = false;
-    let mediaStream = null;
-
-    // DOM Elements
-    const videoElement = document.getElementById('webcam');
-    const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d');
-    
-    const countDisplay = document.getElementById('countDisplay');
-    const speedDisplay = document.getElementById('speedDisplay');
-    const comboDisplay = document.getElementById('comboDisplay');
-    const counterCard = document.getElementById('counterCard');
-    const statusDot = document.getElementById('statusDot');
-    const statusText = document.getElementById('statusText');
-    const handCountText = document.getElementById('handCountText');
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const guideInstruction = document.getElementById('guideInstruction');
-
-    /* Initialize MediaPipe Engine Early (Pre-warm WASM) */
-    const handsEngine = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
-
-    handsEngine.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 0, // Lite model for maximum speed and high FPS
-      minDetectionConfidence: 0.2, // Lower threshold to handle severe motion blur
-      minTrackingConfidence: 0.2
-    });
-
-    handsEngine.onResults(onResults);
-
-    // Pre-fetch WASM assets immediately in background
-    handsEngine.initialize().then(() => {
-      isModelReady = true;
-      if (statusText.innerText === "認識準備中") {
-        statusText.innerText = "手を映してください";
-      }
-    }).catch(err => console.error("MediaPipe warm-up error:", err));
-
-    /* Sound Effects Synthesizer */
-    function SoundEffects() {
-      this.ctx = null;
-      this.enabled = true;
-      this.init = () => {
-        if (!this.ctx) {
-          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-        }
-      };
-      this.playCountSound = (pitchMultiplier = 1) => {
-        if (!this.enabled) return;
-        this.init();
-        try {
-          const osc = this.ctx.createOscillator();
-          const gain = this.ctx.createGain();
-          const baseFreq = 480 + ((pitchMultiplier % 15) * 25);
-          osc.type = 'sine';
-          osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
-          osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.3, this.ctx.currentTime + 0.05);
-          gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.05);
-          osc.connect(gain);
-          gain.connect(this.ctx.destination);
-          osc.start();
-          osc.stop(this.ctx.currentTime + 0.05);
-        } catch(e){}
-      };
-      this.playMilestoneSound = () => {
-        if (!this.enabled) return;
-        this.init();
-        try {
-          [523.25, 659.25, 783.99, 1046.50].forEach((freq, idx) => {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'triangle';
-            osc.frequency.value = freq;
-            gain.gain.setValueAtTime(0.15, this.ctx.currentTime + idx * 0.05);
-            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.05 + 0.18);
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            osc.start(this.ctx.currentTime + idx * 0.05);
-            osc.stop(this.ctx.currentTime + idx * 0.05 + 0.18);
-          });
-        } catch(e){}
-      };
-    }
-    const soundFX = new SoundEffects();
-
-    /* Sound Toggle */
-    soundToggleBtn.addEventListener('click', () => {
-      isSoundOn = !isSoundOn;
-      soundFX.enabled = isSoundOn;
-      soundIcon.className = isSoundOn ? 'fas fa-volume-up' : 'fas fa-volume-mute';
-      soundToggleBtn.classList.toggle('text-amber-400', isSoundOn);
-      soundToggleBtn.classList.toggle('text-slate-500', !isSoundOn);
-    });
-
-    /* Mode Switching */
-    mode67Btn.addEventListener('click', () => {
-      currentMode = '67';
-      mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
-      modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
-      guideInstruction.innerText = "両手を交互に上下（シーソー運動）させてください";
-      swingState = { direction: 'NONE', extremeY: 0 };
-    });
-
-    modeSingleBtn.addEventListener('click', () => {
-      currentMode = 'single';
-      modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
-      mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
-      guideInstruction.innerText = "手を上下に早く動かしてください";
-      swingState = { direction: 'NONE', extremeY: 0 };
-    });
-
-    /* Sensitivity Controls */
-    const sensitivitySlider = document.getElementById('sensitivitySlider');
-    const sensitivityVal = document.getElementById('sensitivityVal');
-    sensitivitySlider.addEventListener('input', (e) => {
-      const val = parseInt(e.target.value, 10);
-      swingDeltaThreshold = val / 100; // 0.01 to 0.10
-      if (val <= 2) {
-        sensitivityVal.innerText = "超音速・微小振り対応 (爆速)";
-      } else if (val <= 5) {
-        sensitivityVal.innerText = "標準感度 (高速ミーム)";
-      } else {
-        sensitivityVal.innerText = "低感度 (大きな振り用)";
-      }
-    });
-
-    /* Reset Button */
-    resetBtn.addEventListener('click', () => {
-      count = 0;
-      combo = 0;
-      speedBpm = 0;
-      swingState = { direction: 'NONE', extremeY: 0 };
-      updateDisplay();
-    });
-
-    /* Help Modal */
-    helpBtn.addEventListener('click', () => helpModal.classList.remove('hidden'));
-    closeHelpBtn.addEventListener('click', () => helpModal.classList.add('hidden'));
-    modalOkBtn.addEventListener('click', () => helpModal.classList.add('hidden'));
-
-    /* Count Increment Logic */
-    function triggerIncrement() {
-      const now = Date.now();
-      if (lastCountTime > 0 && (now - lastCountTime) < minCountIntervalMs) {
-        return;
-      }
-
-      count++;
-      combo++;
-      
-      if (lastCountTime > 0) {
-        const deltaSec = (now - lastCountTime) / 1000;
-        if (deltaSec < 2.5) {
-          const currentBpm = Math.round(60 / deltaSec);
-          speedBpm = Math.round((speedBpm * 0.2) + (currentBpm * 0.8));
-        } else {
-          combo = 1;
-          speedBpm = 0;
-        }
-      }
-      lastCountTime = now;
-
-      soundFX.playCountSound(count);
-      updateDisplay();
-
-      if (count === 67 || (count > 0 && count % 50 === 0)) {
-        soundFX.playMilestoneSound();
-        confetti({
-          particleCount: 120,
-          spread: 80,
-          origin: { y: 0.6 }
-        });
-      }
-
-      // Visual trigger burst
-      counterCard.classList.add('ring-4', 'ring-amber-400', 'bg-amber-500/20');
-      countDisplay.classList.remove('scale-100');
-      countDisplay.classList.add('scale-125', 'text-amber-400');
-      
-      clearTimeout(triggerVisualTimeout);
-      triggerVisualTimeout = setTimeout(() => {
-        counterCard.classList.remove('ring-4', 'ring-amber-400', 'bg-amber-500/20');
-    /* High-Speed Peak-Valley & Velocity Boosted Motion Tracking */
-    function updateMotionTracking(currentY) {
-      // Calculate smoothed motion velocity (Y directional derivative)
-      const deltaY = currentY - prevMotionY;
-      velocityY = (velocityY * 0.2) + (deltaY * 0.8);
-      prevMotionY = currentY;
-
-      if (swingState.direction === 'NONE') {
-        swingState.direction = 'DOWN';
-        swingState.extremeY = currentY;
-        return;
-      }
-
-      if (swingState.direction === 'UP') {
-        // Hand moving UP (Y position decreasing)
-        if (currentY < swingState.extremeY) {
-          swingState.extremeY = currentY; // Track highest point
-        } else if (
-          (currentY > swingState.extremeY + swingDeltaThreshold) || 
-          (velocityY > 0.025) // Instant velocity flip detection
-        ) {
-          // Reversal detected: now moving DOWN
-          swingState.direction = 'DOWN';
-          swingState.extremeY = currentY;
-          triggerIncrement();
-        }
-      } else if (swingState.direction === 'DOWN') {
-        // Hand moving DOWN (Y position increasing)
-        if (currentY > swingState.extremeY) {
-          swingState.extremeY = currentY; // Track lowest point
-        } else if (
-          (currentY < swingState.extremeY - swingDeltaThreshold) || 
-          (velocityY < -0.025) // Instant velocity flip detection
-        ) {
-          // Reversal detected: now moving UP
-          swingState.direction = 'UP';
-          swingState.extremeY = currentY;
-          triggerIncrement();
-        }
-      }
-    }
-
-    /* MediaPipe Hand Tracker Setup */
-    function onResults(results) {
-      canvasElement.width = videoElement.videoWidth || 640;
-      canvasElement.height = videoElement.videoHeight || 480;
-
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
-      const w = canvasElement.width;
-      const h = canvasElement.height;
-
-      const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
-      handCountText.innerText = `${numHands} 手検出`;
-
-      if (numHands > 0) {
-        statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
-        statusText.innerText = "高速判定中";
-
-        const sortedHands = results.multiHandLandmarks.map(landmarks => {
-          return { landmarks, x: landmarks[9].x, y: landmarks[9].y };
-        }).sort((a, b) => a.x - b.x);
-
-        // Calculate active motion Y position
-        let currentMotionY = 0;
-
-        if (currentMode === '67') {
-          if (numHands >= 2) {
-            // Relative height diff between Left and Right hands
-            currentMotionY = sortedHands[0].y - sortedHands[1].y;
-          } else {
-            // Fallback for single hand motion blur
-            currentMotionY = sortedHands[0].y;
-          }
-        } else {
-          // Simple Up-Down mode: Average hand Y position
-          currentMotionY = sortedHands.reduce((sum, hand) => sum + hand.y, 0) / numHands;
-        }
-
-        // Process directional peak-valley tracking
-        updateMotionTracking(currentMotionY);
-
-        // Push to motion history waveform
-        motionHistory.push(currentMotionY);
-        if (motionHistory.length > 50) motionHistory.shift();
-
-        // Draw skeleton & landmarks if checked
-        if (showSkeleton.checked) {
-          sortedHands.forEach((hand, idx) => {
-            const color = idx === 0 ? '#00f5d4' : '#f72585';
-            hand.landmarks.forEach(lm => {
-              canvasCtx.beginPath();
-              canvasCtx.arc(lm.x * w, lm.y * h, 5, 0, 2 * Math.PI);
-              canvasCtx.fillStyle = color;
-              canvasCtx.fill();
-            });
-          });
-
-          // Draw real-time motion sparkline / wave on canvas
-          if (motionHistory.length > 1) {
-            canvasCtx.beginPath();
-            canvasCtx.strokeStyle = '#f59e0b';
-            canvasCtx.lineWidth = 3;
-            const step = w / 50;
-            motionHistory.forEach((val, i) => {
-              const x = i * step;
-              // Map val to canvas height offset
-              const mappedY = h * 0.5 + (val * h * 0.8);
-              if (i === 0) canvasCtx.moveTo(x, mappedY);
-              else canvasCtx.lineTo(x, mappedY);
-            });
-            canvasCtx.stroke();
-          }
-        }
-
-      } else {
-        statusDot.className = "w-2.5 h-2.5 rounded-full bg-slate-500";
-        statusText.innerText = isModelReady ? "手を映してください" : "AIモデル読み込み中";
-      }
-
-      canvasCtx.restore();
-    }
-
-    /* Direct High-Speed Camera Access */
-    async function startCamera() {
-      try {
-        const loadingText = document.getElementById('loadingText');
-        loadingText.innerText = "カメラを接続中...";
-        loadingOverlay.classList.remove('hidden', 'opacity-0');
-
-        if (mediaStream) {
-          mediaStream.getTracks().forEach(track => track.stop());
-        }
-
-        // Direct hardware acquisition via getUserMedia (Instant preview < 300ms)
-        mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            frameRate: { ideal: 60, max: 60 }
-          },
-          audio: false
-        });
-
-        videoElement.srcObject = mediaStream;
-        await videoElement.play();
-
-        // Hide overlay instantly as camera is ready
-        loadingOverlay.classList.add('opacity-0');
-        setTimeout(() => loadingOverlay.classList.add('hidden'), 200);
-
-        // Start processing loop
-        processFrame();
-
-      } catch (err) {
-        console.error("Camera access failed:", err);
-        document.getElementById('loadingText').innerText = "カメラへのアクセスを許可してください";
-        document.getElementById('loadingText').className = "text-sm font-semibold text-red-400";
-      }
-    }
-
-    /* Zero-Latency Video Processing Loop */
-    async function processFrame() {
-      if (videoElement.paused || videoElement.ended) return;
-
-      if (isModelReady && !isProcessingFrame && videoElement.readyState >= 2) {
-        isProcessingFrame = true;
-        try {
-          await handsEngine.send({ image: videoElement });
-        } catch (e) {
-          console.error(e);
-        }
-        isProcessingFrame = false;
-      }
-
-      if ('requestVideoFrameCallback' in videoElement) {
-        videoElement.requestVideoFrameCallback(processFrame);
-      } else {
-        requestAnimationFrame(processFrame);
-      }
-    }
-
-    document.getElementById('toggleCameraBtn').addEventListener('click', () => {
-      startCamera();
-    });
-
-    // Start immediately on window load
-    window.onload = () => {
-      startCamera();
-    };
-  </script>
-</body>
-</html>
+<body>
+<div id="stage"><video id="cam" autoplay playsinline muted></video><canvas id="cvs"></canvas></div>
+<div id="msg">カメラ起動中...</div>
+<div id="hud">
+  <div><div id="num">0</div><span class="pill">⚡ <b id="bpm">0</b> bpm</span><span class="pill">🔥 <b id="cmb">0</b></span></div>
+  <div style="text-align:right"><span class="pill" id="st">認識準備中</span><br><span class="pill" id="hc">0 手検出</span><br><button id="fs">⛶ 全画面</button> <button id="gear">⚙</button></div>
+</div>
+<div id="panel">
+  <button id="m1" class="on">67 交互</button><button id="m2">シンプル上下</button>
+  <label>感度(小=高感度) <input id="sv" type="range" min="1" max="10" value="2"></label>
+  <label>拡大 <input id="zm" type="range" min="1" max="2.5" step=".05" value="1"></label>
+  <label><input id="sk" type="checkbox" checked> 骨格</label>
+  <button id="sd">🔊</button><button id="rs">リセット</button><button id="rc">カメラ再接続</button>
+</div>
+<script>
+const $=id=>document.getElementById(id),v=$('cam'),cv=$('cvs'),g=cv.getContext('2d');
+let count=0,combo=0,bpm=0,mode='67',sound=true,last=0,ready=false,busy=false,stream=null,hands=null;
+let thr=.02,dir=0,ext=0,prevN=0,lastSeen=0,hist=[],ac=null,pend=false;
+
+/* 効果音 */
+addEventListener('pointerdown',()=>{try{ac=ac||new AudioContext();ac.resume()}catch(e){}},{once:true});
+function beep(){if(!sound)return;try{ac=ac||new AudioContext();if(ac.state=='suspended')ac.resume();
+  const o=ac.createOscillator(),a=ac.createGain(),f=480+(count%15)*25,t=ac.currentTime;
+  o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*1.3,t+.05);
+  a.gain.setValueAtTime(.2,t);a.gain.exponentialRampToValueAtTime(.01,t+.05);
+  o.connect(a);a.connect(ac.destination);o.start();o.stop(t+.05)}catch(e){}}
+
+/* カウント（最短40ms間隔 = 毎秒25回まで） */
+function hit(t){
+  if(t-last<40)return;
+  count++;
+  if(last&&t-last<2500){combo++;bpm=Math.round(bpm*.5+60000/(t-last)*.5)}else{combo=1;bpm=0}
+  last=t;beep();
+  $('num').textContent=count;$('bpm').textContent=bpm;$('cmb').textContent=combo;
+  $('num').classList.add('hit');clearTimeout(hit.t);hit.t=setTimeout(()=>$('num').classList.remove('hit'),80);
+}
+
+/* 山・谷の反転検出（フレーム数ではなく振り幅で判定 → 高速でも取りこぼしにくい） */
+function track(y,t){
+  if(!dir){dir=-1;ext=y;return}
+  if(dir>0){ if(y<ext)ext=y; else if(y>ext+thr){dir=-1;ext=y;hit(t)} }
+  else     { if(y>ext)ext=y; else if(y<ext-thr){dir=1;ext=y;hit(t)} }
+}
+
+function onRes(r){
+  const t=performance.now(),L=r.multiHandLandmarks||[],n=L.length;
+  if(v.videoWidth&&cv.width!==v.videoWidth){cv.width=v.videoWidth;cv.height=v.videoHeight}
+  const w=cv.width,h=cv.height;g.clearRect(0,0,w,h);
+  $('hc').textContent=n+' 手検出';
+  if(!n){ if(t-lastSeen>300){dir=0;prevN=0;$('st').textContent='手を映してください'} return }  /* 一瞬の見失い(モーションブラー)は状態を維持 */
+  lastSeen=t;$('st').textContent='高速判定中';
+  if(n!==prevN){dir=0;prevN=n}
+  const hs=L.map(l=>({l,x:l[9].x,y:(l[0].y+l[5].y+l[9].y+l[13].y+l[17].y)/5})).sort((a,b)=>a.x-b.x);
+  const y=(mode=='67'&&n>1)?hs[0].y-hs[1].y:hs.reduce((s,o)=>s+o.y,0)/n;
+  track(y,t);
+  hist.push(y);if(hist.length>60)hist.shift();
+  if($('sk').checked){
+    const rad=Math.max(3,w/160);
+    hs.forEach((o,i)=>{g.fillStyle=i?'#f72585':'#00f5d4';o.l.forEach(p=>{g.beginPath();g.arc(p.x*w,p.y*h,rad,0,7);g.fill()})});
+    const m=hist.reduce((s,a)=>s+a,0)/hist.length;
+    g.beginPath();g.strokeStyle='#f59e0b';g.lineWidth=3;
+    hist.forEach((a,i)=>{const X=i*w/60,Y=h*.5+(a-m)*h*.8;i?g.lineTo(X,Y):g.moveTo(X,Y)});g.stroke();
+  }
+}
+
+/* 最新フレームだけを処理（処理中のフレームは捨てて遅延ゼロ） */
+async function loop(){
+  if(ready&&!busy&&!v.paused&&v.readyState>=2){busy=true;try{await hands.send({image:v})}catch(e){}busy=false}
+  sched();
+}
+function sched(){
+  if(pend)return;pend=true;
+  const f=()=>{pend=false;loop()};
+  v.requestVideoFrameCallback?v.requestVideoFrameCallback(f):requestAnimationFrame(f);
+}
+
+async function start(p){
+  $('msg').style.display='';$('msg').textContent='カメラ起動中...';
+  try{
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    stream=await(p||openCam());v.srcObject=stream;await v.play();
+    $('msg').style.display='none';sched();
+  }catch(e){$('msg').textContent='カメラの使用を許可してください（タップで再試行）'}
+}
+start(camP);
+
+/* MediaPipe は裏で並行ロード（カメラ映像はモデルを待たず先に表示） */
+new Promise(r=>{window.Hands?r():$('hs').addEventListener('load',r)}).then(async()=>{
+  hands=new Hands({locateFile:f=>'https://cdn.jsdelivr.net/npm/@mediapipe/hands/'+f});
+  hands.setOptions({maxNumHands:2,modelComplexity:0,minDetectionConfidence:.3,minTrackingConfidence:.3});
+  hands.onResults(onRes);
+  await hands.initialize();ready=true;$('st').textContent='手を映してください';
+});
+
+/* UI */
+function setMode(m){mode=m;dir=0;$('m1').className=m=='67'?'on':'';$('m2').className=m=='67'?'':'on'}
+$('m1').onclick=()=>setMode('67');$('m2').onclick=()=>setMode('single');
+$('sv').oninput=e=>{thr=e.target.value/100;dir=0};
+$('zm').oninput=e=>document.documentElement.style.setProperty('--z',e.target.value);
+$('sd').onclick=()=>{sound=!sound;$('sd').textContent=sound?'🔊':'🔇'};
+$('rs').onclick=()=>{count=combo=bpm=0;last=0;dir=0;$('num').textContent=0;$('bpm').textContent=0;$('cmb').textContent=0};
+$('rc').onclick=()=>start();
+$('msg').onclick=()=>start();
+$('gear').onclick=()=>$('panel').classList.toggle('hide');
+$('fs').onclick=()=>{document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()};
+</script>
+</body></html>
