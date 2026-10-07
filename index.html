@@ -19,16 +19,15 @@ button{font:inherit;color:inherit;cursor:pointer}
 .b{padding:10px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(15,23,42,.75);font-weight:700;font-size:14px}
 .b.on{background:#f59e0b;color:#0f172a;border-color:#f59e0b}
 .b.sq{width:44px;height:44px;padding:0;font-size:18px}
-.pill{font-size:12px;padding:5px 10px;border-radius:99px;background:rgba(15,23,42,.75);border:1px solid rgba(255,255,255,.2)}
+.pill{font-size:12px;padding:5px 10px;border-radius:99px;background:rgba(15,23,42,.8);border:1px solid rgba(255,255,255,.2)}
 label{font-size:12px;display:flex;align-items:center;gap:6px;background:rgba(15,23,42,.75);padding:8px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.25)}
 input[type=range]{width:110px;accent-color:#f59e0b}
-#msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0f172a;color:#fbbf24;font-weight:700;line-height:1.7}
+#msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0f172a;color:#fbbf24;font-weight:700;line-height:1.7;white-space:pre-line}
 #msg:empty{display:none}
 </style>
 <script>
-/* ページ解析より先にカメラ取得を開始（＝瞬時起動） */
 (function(){
-  var T=[{video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:60}},audio:false},
+  var T=[{video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:120,min:30}},audio:false},
          {video:{facingMode:'user'},audio:false},{video:true,audio:false}];
   window.__open=async function(){
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('unsupported');
@@ -41,127 +40,215 @@ input[type=range]{width:110px;accent-color:#f59e0b}
   };
   window.__cam=window.__open();
   window.__cam.catch(function(){});
+  window.__handsLib=new Promise(function(res,rej){
+    var s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js';
+    s.async=true;s.crossOrigin='anonymous';s.onload=res;s.onerror=rej;document.head.appendChild(s);
+  });
+  window.__handsLib.catch(function(){});
 })();
 </script>
 </head>
 <body>
 <video id="v" autoplay playsinline muted></video>
-
 <div class="center"><div id="n">0</div><div id="arrow">・</div></div>
-
 <div class="top">
-  <span class="pill" id="fps">-- fps</span>
+  <span class="pill" id="st">-- fps</span>
   <span style="display:flex;gap:8px">
     <button class="b sq" id="snd" title="サウンド (M)">🔊</button>
     <button class="b sq" id="fs" title="全画面 (F)">⛶</button>
   </span>
 </div>
-
 <div class="bar">
   <button class="b on" id="m67">67 交互</button>
   <button class="b" id="m1">上下</button>
-  <label>感度 高<input type="range" id="lv" min="1" max="10" value="3">低</label>
+  <button class="b" id="sk" title="手の色だけ判定">肌色のみ</button>
+  <label>感度 高<input type="range" id="lv" min="1" max="10" value="1">低</label>
   <button class="b" id="rs">リセット</button>
 </div>
-
 <div id="msg">カメラを起動中…</div>
 
 <script>
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
-const video=$('v'), nEl=$('n'), msgEl=$('msg'), arrow=$('arrow');
+const video=$('v'),nEl=$('n'),msgEl=$('msg'),arrow=$('arrow');
 
-/* ---------- 設定 ---------- */
-const W=48, H=36;            // 解析解像度（小さいほど速い／大きな動きに強い）
-const MINPX=6, EPS=100, MIN_INT=25;
-let count=0, mode='67', sound=true;
-let mth=12, vth=.14;         // 動き画素のしきい値 / 折返し判定の速度しきい値
-function setLv(){const lv=+$('lv').value; mth=6+2*lv; vth=.05+.03*lv;}
+const WID=64,MINF=4,MINC=2,EPS=80,MIN_INT=6,HOLD=600;
+let count=0,mode='67',sound=true,skinOn=false,mth=5,vth=.04;
+function setLv(){const lv=+$('lv').value;mth=3+2*lv;vth=.02+.02*lv;}
 
-/* ---------- サウンド ---------- */
-let actx=null, lastSnd=0;
+let actx=null,lastSnd=0;
 function audio(){
-  if(!actx){const A=window.AudioContext||window.webkitAudioContext; if(A)actx=new A();}
+  if(!actx){const A=window.AudioContext||window.webkitAudioContext;if(A)actx=new A({latencyHint:'interactive'});}
   if(actx&&actx.state==='suspended')actx.resume().catch(()=>{});
   return actx;
 }
 ['pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,audio,{once:true,passive:true}));
 function beep(){
-  if(!sound)return; const n=performance.now(); if(n-lastSnd<35)return; lastSnd=n;
-  const c=audio(); if(!c)return;
+  if(!sound)return;const n=performance.now();if(n-lastSnd<30)return;lastSnd=n;
+  const c=audio();if(!c)return;
   try{
     const o=c.createOscillator(),g=c.createGain(),t=c.currentTime,f=480+(count%15)*25;
-    o.frequency.setValueAtTime(f,t); o.frequency.exponentialRampToValueAtTime(f*1.3,t+.05);
-    g.gain.setValueAtTime(.2,t); g.gain.exponentialRampToValueAtTime(.01,t+.05);
-    o.connect(g); g.connect(c.destination); o.start(t); o.stop(t+.06);
+    o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*1.3,t+.04);
+    g.gain.setValueAtTime(.2,t);g.gain.exponentialRampToValueAtTime(.01,t+.04);
+    o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+.05);
   }catch(e){}
 }
 
-/* ---------- 動き解析（縦方向オプティカルフロー）----------
-   映像を小さくしてフレーム差分から縦方向の速度を推定。
-   手を「検出」しないので、ブレていても動きが読める。 */
-const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
-const cx=cv.getContext('2d',{willReadFrequently:true});
-let prev=new Float32Array(W*H), cur=new Float32Array(W*H), hasPrev=false;
-const clamp=v=>v>8?8:v<-8?-8:v;
-
-function analyze(t){
-  cx.drawImage(video,0,0,W,H);
-  const d=cx.getImageData(0,0,W,H).data;
-  for(let i=0,j=0;i<W*H;i++,j+=4)cur[i]=d[j]*.299+d[j+1]*.587+d[j+2]*.114;
-  if(hasPrev){
-    let aL=0,bL=0,nL=0,aR=0,bR=0,nR=0; const half=W>>1;
-    for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
-      const i=y*W+x, it=cur[i]-prev[i];
-      if(it<mth&&it>-mth)continue;                      // 動いていない画素は無視
-      const iy=((cur[i+W]-cur[i-W])+(prev[i+W]-prev[i-W]))*.25;
-      if(x<half){aL+=iy*it;bL+=iy*iy;nL++;}else{aR+=iy*it;bR+=iy*iy;nR++;}
-    }
-    const vL=nL>=MINPX?clamp(-aL/(bL+EPS)):0;           // +が下方向(px/frame)
-    const vR=nR>=MINPX?clamp(-aR/(bR+EPS)):0;
-    const nA=nL+nR, vA=nA>=MINPX?clamp(-(aL+aR)/(bL+bR+EPS)):0;
-    if(nA>=MINPX)lastMove=t;
-    step(mode==='67'?(vL-vR)*.5:vA,t);
+/* 手の検出(MediaPipe)：直近0.6秒に手があった範囲だけ判定 */
+const slots=[{h:[]},{h:[]}];
+let hands=null,aiReady=false,aiFailed=false,busy=false,busySince=0;
+(async function(){
+  try{
+    await window.__handsLib;
+    hands=new window.Hands({locateFile:f=>'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/'+f});
+    hands.setOptions({maxNumHands:2,modelComplexity:0,minDetectionConfidence:.3,minTrackingConfidence:.3});
+    hands.onResults(onHands);
+    await hands.initialize();
+    aiReady=true;
+  }catch(e){console.error(e);aiFailed=true;}
+})();
+function onHands(res){
+  const t=performance.now(),L=res.multiHandLandmarks||[];
+  const boxes=L.map(l=>{
+    let x0=1,y0=1,x1=0,y1=0;
+    for(const p of l){if(p.x<x0)x0=p.x;if(p.x>x1)x1=p.x;if(p.y<y0)y0=p.y;if(p.y>y1)y1=p.y;}
+    return {x0,y0,x1,y1};
+  }).sort((a,b)=>(a.x0+a.x1)-(b.x0+b.x1));
+  if(boxes.length>=2){put(0,boxes[0],t);put(1,boxes[boxes.length-1],t);}
+  else if(boxes.length===1){
+    const b=boxes[0],cxb=(b.x0+b.x1)/2,live=[0,1].filter(k=>roiOf(slots[k],t));
+    let k;
+    if(live.length===2)k=Math.abs(cxb-cenX(roiOf(slots[0],t)))<=Math.abs(cxb-cenX(roiOf(slots[1],t)))?0:1;
+    else if(live.length===1)k=Math.abs(cxb-cenX(roiOf(slots[live[0]],t)))<.25?live[0]:1-live[0];
+    else k=cxb<.5?0:1;
+    put(k,b,t);
   }
-  const tmp=prev;prev=cur;cur=tmp;hasPrev=true;
+}
+function put(k,b,t){slots[k].h.push({t,x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1});}
+const cenX=r=>(r.x0+r.x1)/2;
+function roiOf(s,now){
+  const h=s.h;while(h.length&&now-h[0].t>HOLD)h.shift();
+  if(!h.length)return null;
+  let x0=1,y0=1,x1=0,y1=0;
+  for(const e of h){if(e.x0<x0)x0=e.x0;if(e.y0<y0)y0=e.y0;if(e.x1>x1)x1=e.x1;if(e.y1>y1)y1=e.y1;}
+  return {x0:Math.max(0,x0-.06),y0:Math.max(0,y0-.1),x1:Math.min(1,x1+.06),y1:Math.min(1,y1+.1)};
 }
 
-/* ---------- カウント（速度の向きが反転するたびに+1）---------- */
-let dir=0, sv=0, lastMove=0, lastFire=0, dirty=false;
+/* 判定エリア内の縦方向の速度(オプティカルフロー) */
+let W=0,H=0,Wc=0,Hc=0,pg,cg,m,sk,psk,pgc,cgc,mc,cv,cx,ready=false,hasPrev=false;
+function init(vw,vh){
+  W=WID;H=2*Math.round(W*vh/vw/2);Wc=W>>1;Hc=H>>1;
+  pg=new Float32Array(W*H);cg=new Float32Array(W*H);m=new Uint8Array(W*H);
+  sk=new Uint8Array(W*H);psk=new Uint8Array(W*H);
+  pgc=new Float32Array(Wc*Hc);cgc=new Float32Array(Wc*Hc);mc=new Uint8Array(Wc*Hc);
+  cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  cx=cv.getContext('2d',{willReadFrequently:true});
+  hasPrev=false;ready=true;
+}
+const F=new Float64Array(6),C=new Float64Array(6);
+function flow(pg,cg,m,w,h,o){
+  o.fill(0);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x,s=m[i];
+    if(!s)continue;
+    const it=cg[i]-pg[i];
+    if(it<mth&&it>-mth)continue;
+    const iy=((cg[i+w]-cg[i-w])+(pg[i+w]-pg[i-w]))*.25;
+    const j=(s-1)*3;o[j]+=iy*it;o[j+1]+=iy*iy;o[j+2]++;
+  }
+}
+const clamp=v=>v>8?8:v<-8?-8:v;
+const vel=(a,b,n,mn)=>n>=mn?clamp(-a/(b+EPS)):0;
+function pick(vf,vc){vc*=2;if(Math.abs(vc)>3)return vc;return(Math.abs(vc)>Math.abs(vf)&&vc*vf>0)?vc:vf;}
+
+let lastMove=0,state='';
+function analyze(t){
+  cx.drawImage(video,0,0,W,H);
+  const d=cx.getImageData(0,0,W,H).data,n=W*H;
+  for(let i=0,j=0;i<n;i++,j+=4){
+    const r=d[j],g=d[j+1],b=d[j+2];
+    cg[i]=.299*r+.587*g+.114*b;
+    if(skinOn){const cb=128-.1687*r-.3313*g+.5*b,cr=128+.5*r-.4187*g-.0813*b;
+      sk[i]=(cr>125&&cr<190&&cb>70&&cb<140)?1:0;}
+  }
+  m.fill(0);
+  let has;
+  if(aiReady){
+    const rois=[roiOf(slots[0],t),roiOf(slots[1],t)];
+    for(let k=0;k<2;k++){
+      const r=rois[k];if(!r)continue;
+      const x0=Math.floor(r.x0*W),x1=Math.ceil(r.x1*W),y0=Math.floor(r.y0*H),y1=Math.ceil(r.y1*H);
+      for(let y=y0;y<y1&&y<H;y++)for(let x=x0;x<x1&&x<W;x++){
+        const i=y*W+x;
+        if(!m[i]&&(!skinOn||sk[i]||psk[i]))m[i]=k+1;
+      }
+    }
+    has=[!!rois[0],!!rois[1]];
+    state=(has[0]||has[1])?'手を追跡中':'手を映してください';
+  }else{
+    const half=W>>1;
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++)m[y*W+x]=x<half?1:2;
+    has=[true,true];
+    state=aiFailed?'AI読込失敗：全画面判定':'AI準備中：全画面判定';
+  }
+  for(let y=0;y<Hc;y++)for(let x=0;x<Wc;x++){
+    const i=2*y*W+2*x,k=y*Wc+x;
+    cgc[k]=(cg[i]+cg[i+1]+cg[i+W]+cg[i+W+1])*.25;
+    mc[k]=m[i]||m[i+1]||m[i+W]||m[i+W+1];
+  }
+  if(hasPrev&&(has[0]||has[1])){
+    flow(pg,cg,m,W,H,F);
+    flow(pgc,cgc,mc,Wc,Hc,C);
+    const v=[0,0];
+    for(let j=0;j<2;j++){
+      v[j]=pick(vel(F[j*3],F[j*3+1],F[j*3+2],MINF),vel(C[j*3],C[j*3+1],C[j*3+2],MINC));
+      if(F[j*3+2]>=MINF||C[j*3+2]>=MINC)lastMove=t;
+    }
+    let s;
+    if(has[0]&&has[1])s=mode==='67'?(v[0]-v[1])*.5:(v[0]+v[1])*.5;
+    else s=has[0]?v[0]:v[1];
+    step(s,t);
+  }
+  let q=pg;pg=cg;cg=q;q=pgc;pgc=cgc;cgc=q;const u=psk;psk=sk;sk=u;hasPrev=true;
+}
+
+/* カウント(速度の向きが反転するたびに+1) */
+let dir=0,sv=0,lastFire=0,dirty=false;
 function step(v,t){
-  if(t-lastMove>500){dir=0;sv=0;}
-  sv=sv*.4+v*.6;
+  if(t-lastMove>350){dir=0;sv=0;}
+  sv=sv*.1+v*.9;
   if(dir===0){if(sv>vth)dir=1;else if(sv<-vth)dir=-1;}
   else if(dir===1&&sv<-vth){dir=-1;fire(t);}
   else if(dir===-1&&sv>vth){dir=1;fire(t);}
   arrow.textContent=sv>vth?'▼':sv<-vth?'▲':'・';
 }
-function fire(t){
-  if(t-lastFire<MIN_INT)return;
-  lastFire=t; count++; dirty=true; beep();
-}
+function fire(t){if(t-lastFire<MIN_INT)return;lastFire=t;count++;dirty=true;beep();}
 
-/* ---------- フレームループ（カメラの全フレームを処理）---------- */
-let gen=0, lastTime=-1, frames=0, fpsT=performance.now();
+/* フレームループ */
+let gen=0,lastTime=-1,frames=0,fpsT=performance.now();
 function loop(){
   const g=++gen;
   const sched=cb=>video.requestVideoFrameCallback?video.requestVideoFrameCallback(cb):requestAnimationFrame(cb);
   const tick=()=>{
     if(g!==gen)return;
+    const now=performance.now();
     if(video.readyState>=2&&video.videoWidth&&video.currentTime!==lastTime){
-      lastTime=video.currentTime; frames++;
-      analyze(performance.now());
+      if(!ready)init(video.videoWidth,video.videoHeight);
+      lastTime=video.currentTime;frames++;
+      if(busy&&now-busySince>1500)busy=false;
+      if(aiReady&&!busy){busy=true;busySince=now;hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});}
+      analyze(now);
       if(dirty){dirty=false;nEl.textContent=count;nEl.classList.remove('pop');void nEl.offsetWidth;nEl.classList.add('pop');}
     }
-    const n=performance.now();
-    if(n-fpsT>=1000){$('fps').textContent=Math.round(frames*1000/(n-fpsT))+' fps';frames=0;fpsT=n;}
+    if(now-fpsT>=1000){$('st').textContent=Math.round(frames*1000/(now-fpsT))+' fps ・ '+state;frames=0;fpsT=now;}
     sched(tick);
   };
   sched(tick);
 }
 
-/* ---------- カメラ ---------- */
+/* カメラ */
 let stream=null;
 async function start(first){
   msgEl.textContent='カメラを起動中…';
@@ -171,10 +258,9 @@ async function start(first){
     stream.getVideoTracks()[0].addEventListener('ended',()=>{msgEl.textContent='カメラが切断されました。タップで再接続';});
     video.srcObject=stream;
     await video.play().catch(()=>{});
-    hasPrev=false; dir=0; msgEl.textContent=''; loop();
+    ready=false;hasPrev=false;dir=0;msgEl.textContent='';loop();
   }catch(e){
     msgEl.textContent=(window.isSecureContext?'カメラを許可してください（他のアプリが使用中の場合は閉じてください）':'https:// または localhost で開いてください')+'\n\nタップで再試行';
-    msgEl.style.whiteSpace='pre-line';
   }
 }
 msgEl.addEventListener('click',()=>start(false));
@@ -184,22 +270,19 @@ document.addEventListener('visibilitychange',()=>{
   if(!t||t.readyState==='ended')start(false);else{video.play().catch(()=>{});loop();}
 });
 
-/* ---------- UI ---------- */
-function setMode(m){mode=m;$('m67').classList.toggle('on',m==='67');$('m1').classList.toggle('on',m!=='67');dir=0;sv=0;}
+/* UI */
+function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');dir=0;sv=0;}
 function reset(){count=0;nEl.textContent=0;dir=0;sv=0;}
 $('m67').onclick=()=>setMode('67');
 $('m1').onclick=()=>setMode('1');
+$('sk').onclick=()=>{skinOn=!skinOn;$('sk').classList.toggle('on',skinOn);};
 $('lv').oninput=setLv;
 $('rs').onclick=reset;
 $('snd').onclick=()=>{sound=!sound;$('snd').textContent=sound?'🔊':'🔇';audio();};
 const root=document.documentElement;
 function toggleFS(){
-  if(document.fullscreenElement||document.webkitFullscreenElement){
-    (document.exitFullscreen||document.webkitExitFullscreen).call(document);
-  }else{
-    const r=root.requestFullscreen||root.webkitRequestFullscreen;
-    if(r)r.call(root);
-  }
+  if(document.fullscreenElement||document.webkitFullscreenElement){(document.exitFullscreen||document.webkitExitFullscreen).call(document);}
+  else{const r=root.requestFullscreen||root.webkitRequestFullscreen;if(r)r.call(root);}
 }
 if(!(root.requestFullscreen||root.webkitRequestFullscreen))$('fs').style.display='none';
 $('fs').onclick=toggleFS;
@@ -209,7 +292,6 @@ addEventListener('keydown',e=>{
   const k=e.key.toLowerCase();
   if(k==='f')toggleFS();else if(k==='r')reset();else if(k==='m')$('snd').click();
 });
-
 setLv();
 start(true);
 })();
