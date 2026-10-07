@@ -8,8 +8,11 @@
 *{box-sizing:border-box;margin:0}
 html,body{height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;overflow:hidden}
 button{font:inherit;color:inherit;cursor:pointer}
-#v{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#v,#ov{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#ov{image-rendering:pixelated;pointer-events:none;opacity:.6}
 #n{display:inline-block;font-size:clamp(100px,30vw,360px);font-weight:900;line-height:1;text-shadow:0 4px 30px #000,0 0 8px #000}
+#n.pop{animation:pop .09s ease-out}
+@keyframes pop{0%{transform:scale(1.15);color:#fbbf24}100%{transform:scale(1)}}
 .center{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
 #arrow{font-size:36px;text-shadow:0 2px 10px #000;height:44px}
 .top{position:fixed;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;justify-content:space-between;align-items:center}
@@ -24,8 +27,10 @@ input[type=range]{width:110px;accent-color:#f59e0b}
 #msg:empty{display:none}
 </style>
 <script>
+/* ページ解析より先に「カメラ取得」と「手検出AI」の読込を同時開始 */
 (function(){
   var T=[{video:{facingMode:'user',width:{ideal:640},height:{ideal:480},frameRate:{ideal:120,min:30}},audio:false},
+         {video:{facingMode:'user',frameRate:{ideal:60}},audio:false},
          {video:{facingMode:'user'},audio:false},{video:true,audio:false}];
   window.__open=async function(){
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('unsupported');
@@ -49,34 +54,48 @@ input[type=range]{width:110px;accent-color:#f59e0b}
 </head>
 <body>
 <video id="v" autoplay playsinline muted></video>
+<canvas id="ov"></canvas>
+
 <div class="center"><div id="n">0</div><div id="arrow">・</div></div>
+
 <div class="top">
   <span class="pill" id="st">-- fps</span>
   <span style="display:flex;gap:8px">
+    <button class="b sq" id="ovb" title="判定表示 ON/OFF">👁</button>
     <button class="b sq" id="snd" title="サウンド (M)">🔊</button>
     <button class="b sq" id="fs" title="全画面 (F)">⛶</button>
   </span>
 </div>
+
 <div class="bar">
   <button class="b on" id="m67">67 交互</button>
   <button class="b" id="m1">上下</button>
-  <button class="b" id="sk" title="手の色だけ判定">肌色のみ</button>
-  <label>感度 高<input type="range" id="lv" min="1" max="10" value="1">低</label>
+  <label>感度 高<input type="range" id="lv" min="1" max="10" value="2">低</label>
   <button class="b" id="rs">リセット</button>
 </div>
+
 <div id="msg">カメラを起動中…</div>
 
 <script>
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
-const video=$('v'),nEl=$('n'),msgEl=$('msg'),arrow=$('arrow');
+const video=$('v'), nEl=$('n'), msgEl=$('msg'), arrow=$('arrow'), ov=$('ov'), ovx=ov.getContext('2d');
 
-const WID=64,CMIN=6,HOLD=600,HOLD2=2000,AI_GAP=200,AGE=400;
-let count=0,mode='67',sound=true,skinOn=false,mth=5,amp=.02;
-function setLv(){const lv=+$('lv').value;mth=3+1.5*lv;amp=.012+.008*lv;}
+/* ---------- 設定 ---------- */
+const WID=80,        // 解析解像度（横）
+      MINPIX=5,      // 手のシルエットとみなす最小画素数
+      MIN_INT=8,     // 連続カウントの最小間隔(ms)
+      HOLD=1500,     // 手が検出されなくなってもエリアを残す時間(ms)
+      BGA=.04,       // 背景の更新速度
+      PA=.8,         // 位置の平滑化（大きいほど遅延が少ない）
+      IDLE=450;      // この時間動きが無ければ状態リセット
+let count=0, mode='67', sound=true, ovOn=true;
+let dth=12, thBase=.032;
+function setLv(){const lv=+$('lv').value; dth=8+2*lv; thBase=.008+.012*lv;}
 
-let actx=null,lastSnd=0;
+/* ---------- サウンド ---------- */
+let actx=null, lastSnd=0;
 function audio(){
   if(!actx){const A=window.AudioContext||window.webkitAudioContext;if(A)actx=new A({latencyHint:'interactive'});}
   if(actx&&actx.state==='suspended')actx.resume().catch(()=>{});
@@ -94,9 +113,11 @@ function beep(){
   }catch(e){}
 }
 
-/* ① 手の検出(MediaPipe)：手の周りだけを判定エリアにする */
+/* =====================================================================
+   ① 手の場所を探す（MediaPipe Hands）→ 手の「判定エリア」
+   ===================================================================== */
 const slots=[{h:[]},{h:[]}];
-let hands=null,aiReady=false,aiFailed=false,busy=false,busySince=0,lastAi=0;
+let hands=null, aiReady=false, aiFailed=false, busy=false, busySince=0;
 (async function(){
   try{
     await window.__handsLib;
@@ -108,7 +129,7 @@ let hands=null,aiReady=false,aiFailed=false,busy=false,busySince=0,lastAi=0;
   }catch(e){console.error(e);aiFailed=true;}
 })();
 function onHands(res){
-  const t=performance.now(),L=res.multiHandLandmarks||[];
+  const t=performance.now(), L=res.multiHandLandmarks||[];
   const boxes=L.map(l=>{
     let x0=1,y0=1,x1=0,y1=0;
     for(const p of l){if(p.x<x0)x0=p.x;if(p.x>x1)x1=p.x;if(p.y<y0)y0=p.y;if(p.y>y1)y1=p.y;}
@@ -118,112 +139,144 @@ function onHands(res){
   else if(boxes.length===1){
     const b=boxes[0],cxb=(b.x0+b.x1)/2,live=[0,1].filter(k=>roiOf(slots[k],t));
     let k;
-    if(live.length===2)k=Math.abs(cxb-cenX(roiOf(slots[0],t)))<=Math.abs(cxb-cenX(roiOf(slots[1],t)))?0:1;
-    else if(live.length===1)k=Math.abs(cxb-cenX(roiOf(slots[live[0]],t)))<.25?live[0]:1-live[0];
+    if(live.length===2){k=Math.abs(cxb-cenX(roiOf(slots[0],t)))<=Math.abs(cxb-cenX(roiOf(slots[1],t)))?0:1;}
+    else if(live.length===1){k=Math.abs(cxb-cenX(roiOf(slots[live[0]],t)))<.25?live[0]:1-live[0];}
     else k=cxb<.5?0:1;
     put(k,b,t);
   }
 }
 function put(k,b,t){slots[k].h.push({t,x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1});}
 const cenX=r=>(r.x0+r.x1)/2;
-function roiOf(s,now,hold){
-  const h=s.h;while(h.length&&now-h[0].t>HOLD2)h.shift();
-  hold=hold||HOLD;
-  let x0=1,y0=1,x1=0,y1=0,any=false;
-  for(const e of h){if(now-e.t>hold)continue;any=true;if(e.x0<x0)x0=e.x0;if(e.y0<y0)y0=e.y0;if(e.x1>x1)x1=e.x1;if(e.y1>y1)y1=e.y1;}
-  if(!any)return null;
-  return {x0:Math.max(0,x0-.08),y0:Math.max(0,y0-.18),x1:Math.min(1,x1+.08),y1:Math.min(1,y1+.18)};
+function roiOf(s,now){
+  const h=s.h;while(h.length&&now-h[0].t>HOLD)h.shift();
+  if(!h.length)return null;
+  let x0=1,y0=1,x1=0,y1=0;
+  for(const e of h){if(e.x0<x0)x0=e.x0;if(e.y0<y0)y0=e.y0;if(e.x1>x1)x1=e.x1;if(e.y1>y1)y1=e.y1;}
+  return {x0:Math.max(0,x0-.1),y0:Math.max(0,y0-.15),x1:Math.min(1,x1+.1),y1:Math.min(1,y1+.15)};
 }
 
-/* ② 判定エリア内で「動いた画素の上下位置」を毎フレーム求める */
-let W=0,H=0,pg,cg,m,sk,psk,cv,cx,ready=false,hasPrev=false;
+/* =====================================================================
+   ② 判定エリア内で「動いているもの（手）」の縦位置を毎フレーム直接測る
+      ・背景差分でシルエット抽出 → 縦方向の重心Yを位置として使う
+      ・速度ではなく「位置」の折り返しを数えるので、
+        1フレームで大きく動く超高速でも向きを取り違えない
+   ===================================================================== */
+let W=0,H=0,cg,bg,m,cv,cx,ovImg,ready=false,hasPrev=false;
 function init(vw,vh){
-  W=WID;H=Math.max(16,Math.round(W*vh/vw));
-  pg=new Float32Array(W*H);cg=new Float32Array(W*H);m=new Uint8Array(W*H);
-  sk=new Uint8Array(W*H);psk=new Uint8Array(W*H);
+  W=WID;H=2*Math.round(W*vh/vw/2);
+  cg=new Float32Array(W*H);bg=new Float32Array(W*H);m=new Uint8Array(W*H);
   cv=document.createElement('canvas');cv.width=W;cv.height=H;
   cx=cv.getContext('2d',{willReadFrequently:true});
+  ov.width=W;ov.height=H;ovImg=ovx.createImageData(W,H);
   hasPrev=false;ready=true;
 }
-const yp=[.5,.5],ya=[-1e9,-1e9],sd=[0,0],sn=[0,0],sw=[0,0],sy=[0,0],sc=[0,0];
-let lastMove=0,state='',tracking=false;
+const S=new Float64Array(6);          // [重み和, 重みY和, 画素数] × 2手
+const ps=[0,0], hasP=[false,false];
+let lastKey=-1, lastMove=0, state='';
+
 function analyze(t){
   cx.drawImage(video,0,0,W,H);
-  const d=cx.getImageData(0,0,W,H).data,n=W*H;
-  for(let i=0,j=0;i<n;i++,j+=4){
-    const r=d[j],g=d[j+1],b=d[j+2];
-    cg[i]=.299*r+.587*g+.114*b;
-    if(skinOn){const cb=128-.1687*r-.3313*g+.5*b,cr=128+.5*r-.4187*g-.0813*b;
-      sk[i]=(cr>125&&cr<190&&cb>70&&cb<140)?1:0;}
-  }
+  const d=cx.getImageData(0,0,W,H).data, n=W*H;
+  for(let i=0,j=0;i<n;i++,j+=4)cg[i]=.299*d[j]+.587*d[j+1]+.114*d[j+2];
+  if(!hasPrev)bg.set(cg);
+
+  /* 判定エリアのマスク */
   m.fill(0);
-  let has;
+  const rois=[null,null]; let fallback=false;
   if(aiReady){
-    const hold=(t-lastMove<500)?HOLD2:HOLD;
-    const rois=[roiOf(slots[0],t,hold),roiOf(slots[1],t,hold)];
     for(let k=0;k<2;k++){
-      const r=rois[k];if(!r)continue;
+      const r=roiOf(slots[k],t);rois[k]=r;
+      if(!r)continue;
       const x0=Math.floor(r.x0*W),x1=Math.ceil(r.x1*W),y0=Math.floor(r.y0*H),y1=Math.ceil(r.y1*H);
-      for(let y=y0;y<y1&&y<H;y++)for(let x=x0;x<x1&&x<W;x++){
-        const i=y*W+x;
-        if(!m[i]&&(!skinOn||sk[i]||psk[i]))m[i]=k+1;
-      }
+      for(let y=y0;y<y1&&y<H;y++)for(let x=x0;x<x1&&x<W;x++){const i=y*W+x;if(!m[i])m[i]=k+1;}
     }
-    has=[!!rois[0],!!rois[1]];
-    state=(has[0]||has[1])?'手を追跡中':'手を映してください';
+    state=(rois[0]||rois[1])?'手を追跡中':'手を映してください';
   }else{
-    const half=W>>1;
+    fallback=true;const half=W>>1;
     for(let y=0;y<H;y++)for(let x=0;x<W;x++)m[y*W+x]=x<half?1:2;
-    has=[true,true];
     state=aiFailed?'AI読込失敗：全画面判定':'AI準備中：全画面判定';
   }
-  tracking=has[0]||has[1];
-  if(hasPrev&&tracking){
-    sd[0]=sd[1]=sn[0]=sn[1]=0;
-    for(let i=0;i<n;i++){const s=m[i];if(s){sd[s-1]+=cg[i]-pg[i];sn[s-1]++;}}
-    const o0=sn[0]?sd[0]/sn[0]:0,o1=sn[1]?sd[1]/sn[1]:0;   // 明るさの全体変化を除去
-    sw[0]=sw[1]=sy[0]=sy[1]=sc[0]=sc[1]=0;
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-      const i=y*W+x,s=m[i];if(!s)continue;
-      let dd=cg[i]-pg[i]-(s===1?o0:o1);if(dd<0)dd=-dd;
-      if(dd<mth)continue;
-      const k=s-1;sw[k]+=dd;sy[k]+=dd*y;sc[k]++;
+  const has=fallback?[true,true]:[!!rois[0],!!rois[1]];
+  const key=(has[0]?1:0)+(has[1]?2:0);
+  if(key!==lastKey){lastKey=key;resetDet();hasP[0]=hasP[1]=false;}
+
+  /* 背景差分 → シルエットの縦重心 */
+  S.fill(0);
+  const od=ovOn?ovImg.data:null;if(od)od.fill(0);
+  for(let y=0;y<H;y++){
+    const row=y*W;
+    for(let x=0;x<W;x++){
+      const i=row+x,diff=Math.abs(cg[i]-bg[i]);
+      const s=m[i];
+      if(s&&diff>dth){
+        const j=(s-1)*3;S[j]+=diff;S[j+1]+=diff*y;S[j+2]++;
+        if(od){const k=i<<2;od[k]=255;od[k+2]=200;od[k+3]=230;}
+      }
+      bg[i]+=BGA*(cg[i]-bg[i]);
     }
-    for(let k=0;k<2;k++)if(has[k]&&sc[k]>=CMIN){yp[k]=sy[k]/sw[k]/H;ya[k]=t;lastMove=t;}
-    track(t,has);
-  }else if(!tracking){dir=0;pk=0;arrow.textContent='・';}
-  let q=pg;pg=cg;cg=q;const u=psk;psk=sk;sk=u;hasPrev=true;
+  }
+  let updated=[false,false];
+  for(let j=0;j<2;j++){
+    if(!has[j]){hasP[j]=false;continue;}
+    if(S[j*3+2]>=MINPIX&&S[j*3]>0){
+      const p=(S[j*3+1]/S[j*3]+.5)/H;
+      ps[j]=hasP[j]?ps[j]+PA*(p-ps[j]):p;
+      hasP[j]=true;updated[j]=true;lastMove=t;
+    }
+  }
+
+  if(t-lastMove>IDLE)resetDet();
+  if(hasPrev&&(updated[0]||updated[1])){
+    let s=null;
+    if(has[0]&&has[1]){
+      if(hasP[0]&&hasP[1])s=mode==='67'?(ps[0]-ps[1])*.5:(ps[0]+ps[1])*.5;
+    }else{
+      const k=has[0]?0:1;if(hasP[k])s=ps[k];
+    }
+    if(s!==null)step(s,t);
+  }else if(!has[0]&&!has[1]){resetDet();arrow.textContent='・';}
+
+  if(ovOn){
+    ovx.putImageData(ovImg,0,0);
+    if(!fallback){
+      ovx.strokeStyle='#22c55e';ovx.lineWidth=1;
+      for(let k=0;k<2;k++){
+        const r=rois[k];if(!r)continue;
+        ovx.strokeRect(r.x0*W+.5,r.y0*H+.5,(r.x1-r.x0)*W-1,(r.y1-r.y0)*H-1);
+        if(hasP[k]){ovx.fillStyle='#fbbf24';ovx.fillRect(r.x0*W,ps[k]*H-.5,(r.x1-r.x0)*W,1.2);}
+      }
+    }
+  }else ovx.clearRect(0,0,W,H);
+  hasPrev=true;
 }
 
-/*TRK*/
-/* ③ 位置の折り返し(山と谷)を検出してカウント。速度ではなく位置を見るので速くても安定 */
-let dir=0,lo=0,hi=0,ext=0,pk=0,lastFire=0,dirty=false;
-function track(t,has){
-  const v0=has[0]&&t-ya[0]<AGE,v1=has[1]&&t-ya[1]<AGE;
-  let P=0,key=0;
-  if(v0&&v1){key=3;P=mode==='67'?yp[0]-yp[1]:(yp[0]+yp[1])/2;}
-  else if(v0){key=1;P=yp[0];}
-  else if(v1){key=2;P=yp[1];}
-  if(!key||key!==pk||t-lastMove>350){pk=key;dir=0;lo=hi=P;arrow.textContent='・';if(!key)return;}
-  const A=(key===3&&mode==='67')?amp*2:amp;
+/* ---------- カウント：位置の折り返し（ヒステリシス付きピーク検出）---------- */
+let dir=0,hi=0,lo=0,amp=0,lastFire=0,dirty=false;
+function resetDet(){dir=0;amp=0;hi=lo=0;}
+function step(s,t){
+  // しきい値：基準値を、直近の振幅に応じて小さくも出来る（小さく速い動きに追従）
+  const floor=thBase*.4;
+  const thr=amp>0?Math.max(floor,Math.min(thBase,amp*.4)):thBase;
   if(dir===0){
-    if(P<lo)lo=P;if(P>hi)hi=P;
-    if(P-lo>A){dir=1;ext=P;}else if(hi-P>A){dir=-1;ext=P;}
+    if(hi===0&&lo===0){hi=lo=s;}
+    if(s>hi)hi=s;if(s<lo)lo=s;
+    if(s-lo>thr){dir=1;hi=s;}
+    else if(hi-s>thr){dir=-1;lo=s;}
   }else if(dir===1){
-    if(P>ext)ext=P;else if(ext-P>A){dir=-1;ext=P;fire(t);}
+    if(s>hi)hi=s;
+    else if(hi-s>thr){amp=hi-lo;dir=-1;lo=s;fire(t);}
   }else{
-    if(P<ext)ext=P;else if(P-ext>A){dir=1;ext=P;fire(t);}
+    if(s<lo)lo=s;
+    else if(s-lo>thr){amp=hi-lo;dir=1;hi=s;fire(t);}
   }
   arrow.textContent=dir===1?'▼':dir===-1?'▲':'・';
 }
-function fire(t){lastFire=t;count++;dirty=true;beep();}
-/*END*/
+function fire(t){if(t-lastFire<MIN_INT)return;lastFire=t;count++;dirty=true;beep();}
 
-/* フレームループ */
+/* ---------- フレームループ（カメラの全フレームを処理）---------- */
 let gen=0,lastTime=-1,frames=0,fpsT=performance.now();
-const POP=[{transform:'scale(1.15)',color:'#fbbf24'},{transform:'scale(1)',color:'#fff'}];
 function loop(){
-  const g=++gen;
+  const g=++gen;hasPrev=false;
   const sched=cb=>video.requestVideoFrameCallback?video.requestVideoFrameCallback(cb):requestAnimationFrame(cb);
   const tick=()=>{
     if(g!==gen)return;
@@ -231,13 +284,10 @@ function loop(){
     if(video.readyState>=2&&video.videoWidth&&video.currentTime!==lastTime){
       if(!ready)init(video.videoWidth,video.videoHeight);
       lastTime=video.currentTime;frames++;
-      analyze(now);
-      if(dirty){dirty=false;nEl.textContent=count;nEl.animate(POP,{duration:90});}
       if(busy&&now-busySince>1500)busy=false;
-      if(aiReady&&!busy&&(!tracking||now-lastAi>AI_GAP)){
-        busy=true;busySince=lastAi=now;
-        hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});
-      }
+      analyze(now);                                   // 先に解析（遅延を最小化）
+      if(dirty){dirty=false;nEl.textContent=count;nEl.classList.remove('pop');void nEl.offsetWidth;nEl.classList.add('pop');}
+      if(aiReady&&!busy){busy=true;busySince=now;hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});}
     }
     if(now-fpsT>=1000){$('st').textContent=Math.round(frames*1000/(now-fpsT))+' fps ・ '+state;frames=0;fpsT=now;}
     sched(tick);
@@ -245,7 +295,7 @@ function loop(){
   sched(tick);
 }
 
-/* カメラ */
+/* ---------- カメラ ---------- */
 let stream=null;
 async function start(first){
   msgEl.textContent='カメラを起動中…';
@@ -255,7 +305,7 @@ async function start(first){
     stream.getVideoTracks()[0].addEventListener('ended',()=>{msgEl.textContent='カメラが切断されました。タップで再接続';});
     video.srcObject=stream;
     await video.play().catch(()=>{});
-    ready=false;hasPrev=false;dir=0;msgEl.textContent='';loop();
+    ready=false;hasPrev=false;resetDet();msgEl.textContent='';loop();
   }catch(e){
     msgEl.textContent=(window.isSecureContext?'カメラを許可してください（他のアプリが使用中の場合は閉じてください）':'https:// または localhost で開いてください')+'\n\nタップで再試行';
   }
@@ -267,14 +317,14 @@ document.addEventListener('visibilitychange',()=>{
   if(!t||t.readyState==='ended')start(false);else{video.play().catch(()=>{});loop();}
 });
 
-/* UI */
-function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');dir=0;pk=0;}
-function reset(){count=0;nEl.textContent=0;dir=0;pk=0;}
+/* ---------- UI ---------- */
+function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');resetDet();}
+function reset(){count=0;nEl.textContent=0;resetDet();}
 $('m67').onclick=()=>setMode('67');
 $('m1').onclick=()=>setMode('1');
-$('sk').onclick=()=>{skinOn=!skinOn;$('sk').classList.toggle('on',skinOn);};
 $('lv').oninput=setLv;
 $('rs').onclick=reset;
+$('ovb').onclick=()=>{ovOn=!ovOn;$('ovb').style.opacity=ovOn?1:.45;};
 $('snd').onclick=()=>{sound=!sound;$('snd').textContent=sound?'🔊':'🔇';audio();};
 const root=document.documentElement;
 function toggleFS(){
@@ -289,6 +339,7 @@ addEventListener('keydown',e=>{
   const k=e.key.toLowerCase();
   if(k==='f')toggleFS();else if(k==='r')reset();else if(k==='m')$('snd').click();
 });
+
 setLv();
 start(true);
 })();
