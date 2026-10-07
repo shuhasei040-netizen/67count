@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>67 Hand Movement Counter</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  
+  <!-- MediaPipe Hands & Camera Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800;900&family=Noto+Sans+JP:wght@400;700;900&display=swap');
+    
+    body {
+      font-family: 'Outfit', 'Noto Sans JP', sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+
+    .mirror {
+      transform: scaleX(-1);
+    }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #f59e0b 0%, #ec4899 50%, #8b5cf6 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .glass-panel {
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .pulse-glow {
+      box-shadow: 0 0 25px rgba(245, 158, 11, 0.4);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between overflow-x-hidden selection:bg-amber-500 selection:text-slate-900">
+
+  <!-- Header -->
+  <header class="w-full glass-panel sticky top-0 z-50 px-4 py-3 border-b border-slate-800">
+    <div class="max-w-6xl mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-pink-500 flex items-center justify-center font-black text-xl text-slate-900 shadow-lg">
+          67
+        </div>
+        <div>
+          <h1 class="text-xl font-black tracking-wider gradient-text">67 HAND COUNTER</h1>
+          <p class="text-xs text-slate-400">ネットミーム「手上下」モーションカウンター</p>
+        </div>
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <button id="soundToggleBtn" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition flex items-center space-x-1 border border-slate-700" title="サウンド切り替え">
+          <i id="soundIcon" class="fas fa-volume-up"></i>
+        </button>
+        <button id="helpBtn" class="p-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition border border-slate-700" title="使い方">
+          <i class="fas fa-question-circle"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="max-w-6xl w-full mx-auto p-4 md:p-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6">
+    
+    <!-- Left Column: Camera Viewport -->
+    <div class="lg:col-span-7 flex flex-col space-y-4">
+      <div class="glass-panel rounded-2xl p-3 relative overflow-hidden flex flex-col items-center justify-center min-h-[360px]">
+        
+        <!-- Camera Viewport Container -->
+        <div id="canvasContainer" class="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shadow-inner flex items-center justify-center">
+          
+          <video id="webcam" class="absolute inset-0 w-full h-full object-cover mirror" autoplay playsinline></video>
+          <canvas id="output_canvas" class="absolute inset-0 w-full h-full object-cover mirror"></canvas>
+
+          <!-- Loading Overlay -->
+          <div id="loadingOverlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center z-20 space-y-3 transition-opacity duration-300">
+            <div class="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+            <p id="loadingText" class="text-sm font-semibold text-amber-400">カメラ & AIモデルを準備中...</p>
+          </div>
+
+          <!-- Live Status Indicator -->
+          <div class="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
+            <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
+            <span id="statusText" class="font-medium text-slate-300">認識待ち</span>
+          </div>
+
+          <!-- Hands Detected Indicator -->
+          <div class="absolute top-3 right-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
+            <i class="fas fa-hand text-amber-400"></i>
+            <span id="handCountText" class="font-bold text-amber-400">0 手検出</span>
+          </div>
+
+          <!-- Gesture Target Helper Overlay -->
+          <div id="gestureGuide" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-slate-900/85 px-4 py-2 rounded-xl border border-amber-500/30 text-center backdrop-blur-md transition-all">
+            <p id="guideInstruction" class="text-xs text-amber-300 font-semibold">カメラの前で手を上下に振ってください</p>
+          </div>
+        </div>
+
+        <!-- Camera Controls -->
+        <div class="w-full flex items-center justify-between mt-3 px-1 text-xs text-slate-400">
+          <div class="flex items-center space-x-3">
+            <label class="inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="showSkeleton" class="sr-only peer" checked>
+              <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 relative"></div>
+              <span class="ml-2 font-medium text-slate-300">手の枠線描画</span>
+            </label>
+          </div>
+          <button id="toggleCameraBtn" class="hover:text-amber-400 transition flex items-center space-x-1">
+            <i class="fas fa-sync-alt"></i>
+            <span>カメラ再接続</span>
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Right Column: Counter Dashboard & Settings -->
+    <div class="lg:col-span-5 flex flex-col space-y-4">
+      
+      <!-- Counter Card -->
+      <div class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden pulse-glow">
+        <div class="text-xs font-black uppercase tracking-widest text-amber-400 mb-1">TOTAL "67" COUNT</div>
+        
+        <!-- Big Number -->
+        <div id="countDisplay" class="text-7xl md:text-8xl font-black tracking-tight my-2 text-white drop-shadow-lg transition-transform duration-100 scale-100">
+          0
+        </div>
+
+        <!-- Rhythm Speed (BPM / Reps per min) -->
+        <div class="flex items-center justify-center space-x-4 mt-2 text-slate-400 text-sm">
+          <div class="flex items-center space-x-1 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700">
+            <i class="fas fa-bolt text-amber-400"></i>
+            <span>スピード: <strong id="speedDisplay" class="text-white">0</strong> bpm</span>
+          </div>
+          <div class="flex items-center space-x-1 bg-slate-800/80 px-3 py-1 rounded-lg border border-slate-700">
+            <i class="fas fa-fire text-pink-500"></i>
+            <span>コンボ: <strong id="comboDisplay" class="text-white">0</strong></span>
+          </div>
+        </div>
+
+        <!-- Reset Button -->
+        <button id="resetBtn" class="mt-5 w-full py-3 px-4 bg-gradient-to-r from-red-500/80 to-pink-600/80 hover:from-red-500 hover:to-pink-600 text-white font-bold rounded-xl transition shadow-lg flex items-center justify-center space-x-2 border border-red-400/30">
+          <i class="fas fa-redo-alt"></i>
+          <span>カウントリセット</span>
+        </button>
+      </div>
+
+      <!-- Mode Selection & Controls -->
+      <div class="glass-panel rounded-2xl p-5 space-y-4">
+        <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
+          <i class="fas fa-sliders-h text-amber-400"></i>
+          <span>カウントモード設定</span>
+        </h3>
+
+        <!-- Mode Switches -->
+        <div class="grid grid-cols-2 gap-2 p-1 bg-slate-900/60 rounded-xl border border-slate-800">
+          <button id="mode67Btn" class="py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow">
+            <i class="fas fa-hands text-sm"></i>
+            <span>67 交互ミーム</span>
+          </button>
+          <button id="modeSingleBtn" class="py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800">
+            <i class="fas fa-hand-paper text-sm"></i>
+            <span>シンプル上下</span>
+          </button>
+        </div>
+
+        <!-- Sensitivity Sliders -->
+        <div class="space-y-3 pt-2">
+          <div>
+            <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
+              <span>上判定ライン (上限):</span>
+              <span id="upperVal" class="text-amber-400">40%</span>
+            </div>
+            <input type="range" id="upperSlider" min="10" max="45" value="40" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
+              <span>下判定ライン (下限):</span>
+              <span id="lowerVal" class="text-amber-400">65%</span>
+            </div>
+            <input type="range" id="lowerSlider" min="55" max="90" value="65" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Help Modal -->
+  <div id="helpModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="glass-panel max-w-md w-full rounded-2xl p-6 space-y-4 border border-slate-700 shadow-2xl">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h3 class="text-lg font-bold text-amber-400 flex items-center space-x-2">
+          <i class="fas fa-info-circle"></i>
+          <span>使い方・67ミームの動かし方</span>
+        </h3>
+        <button id="closeHelpBtn" class="text-slate-400 hover:text-white text-xl">&times;</button>
+      </div>
+      
+      <div class="space-y-3 text-sm text-slate-300 leading-relaxed">
+        <p><strong class="text-amber-400">【67 交互ミームモード】</strong><br>両手を画面に映し、シーソー（天秤）のように片手を上げながらもう片手を下げる動作を交互に行うとカウントされます！</p>
+        <p><strong class="text-amber-400">【シンプル上下モード】</strong><br>片手または両手を一度画面の上のラインまで上げてから、下のラインまで下げる動作で1カウントされます。</p>
+        <p class="text-xs bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-slate-400">
+          ※ カウントされない場合は、部屋を明るくするか「判定ライン」スライダーで上限・下限を調節してください。
+        </p>
+      </div>
+
+      <button id="modalOkBtn" class="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition">
+        理解しました！
+      </button>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="w-full py-3 text-center text-xs text-slate-500 border-t border-slate-800/80">
+    <p>Powered by MediaPipe Hands & Web Audio API — 67 Meme Counter</p>
+  </footer>
+
+  <script>
+    /* Web Audio Synthesizer for SFX */
+    class SoundEffects {
+      constructor() {
+        this.ctx = null;
+        this.enabled = true;
+      }
+
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioContext();
+        }
+      }
+
+      playCountSound(count) {
+        if (!this.enabled) return;
+        this.init();
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        // Higher pitch for combo/higher count
+        const baseFreq = 440 + ((count % 12) * 30);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.5, this.ctx.currentTime + 0.1);
+
+        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.15);
+      }
+
+      playMilestoneSound() {
+        if (!this.enabled) return;
+        this.init();
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+        notes.forEach((freq, idx) => {
+          setTimeout(() => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.3);
+          }, idx * 80);
+        });
+      }
+    }
+
+    /* Application State Variables */
+    let count = 0;
+    let combo = 0;
+    let currentMode = '67'; // '67' or 'single'
+    let upperThreshold = 0.40;
+    let lowerThreshold = 0.65;
+    let isSoundOn = true;
+    let lastCountTime = 0;
+    let speedBpm = 0;
+
+    // States for tracking movement
+    // 67 mode: 'left_up_right_down' vs 'right_up_left_down'
+    let state67 = 'neutral';
+    // Single mode state: 'up' vs 'down'
+    let stateSingle = 'down';
+
+    const soundFX = new SoundEffects();
+
+    // DOM Elements
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    const countDisplay = document.getElementById('countDisplay');
+    const speedDisplay = document.getElementById('speedDisplay');
+    const comboDisplay = document.getElementById('comboDisplay');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const handCountText = document.getElementById('handCountText');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const guideInstruction = document.getElementById('guideInstruction');
+
+    const soundToggleBtn = document.getElementById('soundToggleBtn');
+    const soundIcon = document.getElementById('soundIcon');
+    const mode67Btn = document.getElementById('mode67Btn');
+    const modeSingleBtn = document.getElementById('modeSingleBtn');
+    const upperSlider = document.getElementById('upperSlider');
+    const lowerSlider = document.getElementById('lowerSlider');
+    const upperVal = document.getElementById('upperVal');
+    const lowerVal = document.getElementById('lowerVal');
+    const showSkeleton = document.getElementById('showSkeleton');
+    const resetBtn = document.getElementById('resetBtn');
+    const helpBtn = document.getElementById('helpBtn');
+    const helpModal = document.getElementById('helpModal');
+    const closeHelpBtn = document.getElementById('closeHelpBtn');
+    const modalOkBtn = document.getElementById('modalOkBtn');
+
+    /* Sound Toggle */
+    soundToggleBtn.addEventListener('click', () => {
+      isSoundOn = !isSoundOn;
+      soundFX.enabled = isSoundOn;
+      soundIcon.className = isSoundOn ? 'fas fa-volume-up' : 'fas fa-volume-mute';
+      soundToggleBtn.classList.toggle('text-amber-400', isSoundOn);
+      soundToggleBtn.classList.toggle('text-slate-500', !isSoundOn);
+    });
+
+    /* Mode Switching */
+    mode67Btn.addEventListener('click', () => {
+      currentMode = '67';
+      mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
+      modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
+      guideInstruction.innerText = "両手を交互に上下（シーソー運動）させてください";
+    });
+
+    modeSingleBtn.addEventListener('click', () => {
+      currentMode = 'single';
+      modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
+      mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
+      guideInstruction.innerText = "手を上限ラインまで上げ、下限ラインまで下げてください";
+    });
+
+    /* Sensitivity Controls */
+    upperSlider.addEventListener('input', (e) => {
+      upperThreshold = parseFloat(e.target.value) / 100;
+      upperVal.innerText = `${e.target.value}%`;
+    });
+
+    lowerSlider.addEventListener('input', (e) => {
+      lowerThreshold = parseFloat(e.target.value) / 100;
+      lowerVal.innerText = `${e.target.value}%`;
+    });
+
+    /* Reset Button */
+    resetBtn.addEventListener('click', () => {
+      count = 0;
+      combo = 0;
+      speedBpm = 0;
+      updateDisplay();
+    });
+
+    /* Help Modal */
+    helpBtn.addEventListener('click', () => helpModal.classList.remove('hidden'));
+    closeHelpBtn.addEventListener('click', () => helpModal.classList.add('hidden'));
+    modalOkBtn.addEventListener('click', () => helpModal.classList.add('hidden'));
+
+    /* Count Increment Logic */
+    function triggerIncrement() {
+      count++;
+      combo++;
+      
+      const now = Date.now();
+      if (lastCountTime > 0) {
+        const deltaSec = (now - lastCountTime) / 1000;
+        if (deltaSec < 2.5) {
+          const currentBpm = Math.round(60 / deltaSec);
+          speedBpm = Math.round((speedBpm * 0.4) + (currentBpm * 0.6));
+        } else {
+          combo = 1;
+          speedBpm = 0;
+        }
+      }
+      lastCountTime = now;
+
+      // Sound & Visual
+      soundFX.playCountSound(count);
+      updateDisplay();
+
+      // Milestone Confetti
+      if (count === 67 || (count > 0 && count % 50 === 0)) {
+        soundFX.playMilestoneSound();
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 }
+        });
+      }
+
+      // Pop Animation
+      countDisplay.classList.remove('scale-100');
+      countDisplay.classList.add('scale-125', 'text-amber-400');
+      setTimeout(() => {
+        countDisplay.classList.remove('scale-125', 'text-amber-400');
+        countDisplay.classList.add('scale-100');
+      }, 150);
+    }
+
+    function updateDisplay() {
+      countDisplay.innerText = count;
+      speedDisplay.innerText = speedBpm;
+      comboDisplay.innerText = combo;
+    }
+
+    /* MediaPipe Hand Tracker Setup */
+    function onResults(results) {
+      // Hide loading screen on first result
+      if (!loadingOverlay.classList.contains('opacity-0')) {
+        loadingOverlay.classList.add('opacity-0');
+        setTimeout(() => loadingOverlay.classList.add('hidden'), 300);
+      }
+
+      canvasElement.width = videoElement.videoWidth || 640;
+      canvasElement.height = videoElement.videoHeight || 480;
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // Draw Threshold Lines
+      const w = canvasElement.width;
+      const h = canvasElement.height;
+
+      // Upper Threshold Line (Amber)
+      canvasCtx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
+      canvasCtx.lineWidth = 3;
+      canvasCtx.setLineDash([8, 6]);
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(0, h * upperThreshold);
+      canvasCtx.lineTo(w, h * upperThreshold);
+      canvasCtx.stroke();
+
+      // Lower Threshold Line (Pink)
+      canvasCtx.strokeStyle = 'rgba(236, 72, 153, 0.8)';
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(0, h * lowerThreshold);
+      canvasCtx.lineTo(w, h * lowerThreshold);
+      canvasCtx.stroke();
+      canvasCtx.setLineDash([]);
+
+      const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+      handCountText.innerText = `${numHands} 手検出`;
+
+      if (numHands > 0) {
+        statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+        statusText.innerText = "トラッキング中";
+
+        // Sort hands by X position to reliably separate Left vs Right on screen
+        const sortedHands = results.multiHandLandmarks.map(landmarks => {
+          // Landmark 9 is middle finger MCP
+          return { landmarks, x: landmarks[9].x, y: landmarks[9].y };
+        }).sort((a, b) => a.x - b.x);
+
+        // Draw Skeletal Lines
+        if (showSkeleton.checked) {
+          sortedHands.forEach((hand, idx) => {
+            const color = idx === 0 ? '#00f5d4' : '#f72585';
+            hand.landmarks.forEach(lm => {
+              canvasCtx.beginPath();
+              canvasCtx.arc(lm.x * w, lm.y * h, 5, 0, 2 * Math.PI);
+              canvasCtx.fillStyle = color;
+              canvasCtx.fill();
+            });
+          });
+        }
+
+        /* Mode 1: "67" Alternating Meme Mode (Requires 2 Hands or alternating single hand positions) */
+        if (currentMode === '67') {
+          if (numHands >= 2) {
+            const hand1Y = sortedHands[0].y;
+            const hand2Y = sortedHands[1].y;
+
+            // State A: Hand 1 UP & Hand 2 DOWN
+            if (hand1Y < upperThreshold && hand2Y > lowerThreshold) {
+              if (state67 === 'stateB' || state67 === 'neutral') {
+                state67 = 'stateA';
+                triggerIncrement();
+              }
+            } 
+            // State B: Hand 1 DOWN & Hand 2 UP
+            else if (hand1Y > lowerThreshold && hand2Y < upperThreshold) {
+              if (state67 === 'stateA') {
+                state67 = 'stateB';
+                triggerIncrement();
+              }
+            }
+          } else {
+            // Single hand fallback for 67 mode
+            const handY = sortedHands[0].y;
+            if (handY < upperThreshold && state67 !== 'up') {
+              state67 = 'up';
+            } else if (handY > lowerThreshold && state67 === 'up') {
+              state67 = 'down';
+              triggerIncrement();
+            }
+          }
+        } 
+        /* Mode 2: Simple Vertical Rep Mode */
+        else if (currentMode === 'single') {
+          // Calculate average Y position of detected hands
+          const avgY = sortedHands.reduce((acc, h) => acc + h.y, 0) / numHands;
+
+          if (stateSingle === 'down' && avgY < upperThreshold) {
+            stateSingle = 'up';
+            guideInstruction.innerText = "そのまま手を出して下ろしてください！";
+          } else if (stateSingle === 'up' && avgY > lowerThreshold) {
+            stateSingle = 'down';
+            guideInstruction.innerText = "GOOD! 再び上に上げてください";
+            triggerIncrement();
+          }
+        }
+
+      } else {
+        statusDot.className = "w-2.5 h-2.5 rounded-full bg-slate-500";
+        statusText.innerText = "手を映してください";
+      }
+
+      canvasCtx.restore();
+    }
+
+    const handsEngine = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    handsEngine.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    handsEngine.onResults(onResults);
+
+    /* Initialize Camera */
+    async function startCamera() {
+      try {
+        const camera = new Camera(videoElement, {
+          onFrame: async () => {
+            await handsEngine.send({ image: videoElement });
+          },
+          width: 640,
+          height: 480
+        });
+        await camera.start();
+      } catch (err) {
+        console.error("Camera access failed:", err);
+        document.getElementById('loadingText').innerText = "カメラへのアクセスを許可してください";
+        document.getElementById('loadingText').className = "text-sm font-semibold text-red-400";
+      }
+    }
+
+    document.getElementById('toggleCameraBtn').addEventListener('click', () => {
+      loadingOverlay.classList.remove('hidden', 'opacity-0');
+      startCamera();
+    });
+
+    // Start on window load
+    window.onload = () => {
+      startCamera();
+    };
+  </script>
+</body>
+</html>
