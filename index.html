@@ -90,7 +90,13 @@
           <!-- Loading Overlay -->
           <div id="loadingOverlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center z-20 space-y-3 transition-opacity duration-300">
             <div class="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
-            <p id="loadingText" class="text-sm font-semibold text-amber-400">カメラ & AIモデルを準備中...</p>
+            <p id="loadingText" class="text-sm font-semibold text-amber-400">カメラを即時起動中...</p>
+          </div>
+
+          <!-- Live Status Indicator -->
+          <div class="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
+            <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
+            <span id="statusText" class="font-medium text-slate-300">認識準備中</span>
           </div>
 
           <!-- Live Status Indicator -->
@@ -252,9 +258,15 @@
     let lastCountTime = 0;
     let speedBpm = 0;
     let fastModeEnabled = true;
-    const minCountIntervalMs = 70; // Minimum interval (70ms) to allow super fast counting without glitching
+    const minCountIntervalMs = 70;
 
-    const soundFX = new SoundEffects();
+    let state67 = 'neutral';
+    let stateSingle = 'down';
+
+    // Pre-warming & Direct Stream State
+    let isModelReady = false;
+    let isProcessingFrame = false;
+    let mediaStream = null;
 
     // DOM Elements
     const videoElement = document.getElementById('webcam');
@@ -270,21 +282,75 @@
     const loadingOverlay = document.getElementById('loadingOverlay');
     const guideInstruction = document.getElementById('guideInstruction');
 
-    const soundToggleBtn = document.getElementById('soundToggleBtn');
-    const soundIcon = document.getElementById('soundIcon');
-    const mode67Btn = document.getElementById('mode67Btn');
-    const modeSingleBtn = document.getElementById('modeSingleBtn');
-    const upperSlider = document.getElementById('upperSlider');
-    const lowerSlider = document.getElementById('lowerSlider');
-    const upperVal = document.getElementById('upperVal');
-    const lowerVal = document.getElementById('lowerVal');
-    const fastModeToggle = document.getElementById('fastModeToggle');
-    const showSkeleton = document.getElementById('showSkeleton');
-    const resetBtn = document.getElementById('resetBtn');
-    const helpBtn = document.getElementById('helpBtn');
-    const helpModal = document.getElementById('helpModal');
-    const closeHelpBtn = document.getElementById('closeHelpBtn');
-    const modalOkBtn = document.getElementById('modalOkBtn');
+    /* Initialize MediaPipe Engine Early (Pre-warm WASM) */
+    const handsEngine = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    handsEngine.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 0, // Lite model for maximum speed
+      minDetectionConfidence: 0.35,
+      minTrackingConfidence: 0.35
+    });
+
+    handsEngine.onResults(onResults);
+
+    // Pre-fetch WASM assets immediately in background
+    handsEngine.initialize().then(() => {
+      isModelReady = true;
+      if (statusText.innerText === "認識準備中") {
+        statusText.innerText = "手を映してください";
+      }
+    }).catch(err => console.error("MediaPipe warm-up error:", err));
+
+    /* Sound Effects Synthesizer */
+    function SoundEffects() {
+      this.ctx = null;
+      this.enabled = true;
+      this.init = () => {
+        if (!this.ctx) {
+          this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+      };
+      this.playCountSound = (pitchMultiplier = 1) => {
+        if (!this.enabled) return;
+        this.init();
+        try {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          const baseFreq = 440 + Math.min((pitchMultiplier % 20) * 20, 400);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.5, this.ctx.currentTime + 0.08);
+          gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.08);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start();
+          osc.stop(this.ctx.currentTime + 0.08);
+        } catch(e){}
+      };
+      this.playMilestoneSound = () => {
+        if (!this.enabled) return;
+        this.init();
+        try {
+          [523.25, 659.25, 783.99, 1046.50].forEach((freq, idx) => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.15, this.ctx.currentTime + idx * 0.06);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.06 + 0.2);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start(this.ctx.currentTime + idx * 0.06);
+            osc.stop(this.ctx.currentTime + idx * 0.06 + 0.2);
+          });
+        } catch(e){}
+      };
+    }
+    const soundFX = new SoundEffects();
 
     /* Sound Toggle */
     soundToggleBtn.addEventListener('click', () => {
@@ -343,7 +409,6 @@
     /* Count Increment Logic */
     function triggerIncrement() {
       const now = Date.now();
-      // Lockout prevention for frame stuttering on high speed gestures
       if (lastCountTime > 0 && (now - lastCountTime) < minCountIntervalMs) {
         return;
       }
@@ -363,11 +428,9 @@
       }
       lastCountTime = now;
 
-      // Sound & Visual
       soundFX.playCountSound(count);
       updateDisplay();
 
-      // Milestone Confetti
       if (count === 67 || (count > 0 && count % 50 === 0)) {
         soundFX.playMilestoneSound();
         confetti({
@@ -377,7 +440,6 @@
         });
       }
 
-      // Pop Animation
       countDisplay.classList.remove('scale-100');
       countDisplay.classList.add('scale-125', 'text-amber-400');
       setTimeout(() => {
@@ -394,19 +456,12 @@
 
     /* MediaPipe Hand Tracker Setup */
     function onResults(results) {
-      // Hide loading screen on first result
-      if (!loadingOverlay.classList.contains('opacity-0')) {
-        loadingOverlay.classList.add('opacity-0');
-        setTimeout(() => loadingOverlay.classList.add('hidden'), 300);
-      }
-
       canvasElement.width = videoElement.videoWidth || 640;
       canvasElement.height = videoElement.videoHeight || 480;
 
       canvasCtx.save();
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-      // Draw Threshold Lines
       const w = canvasElement.width;
       const h = canvasElement.height;
 
@@ -434,13 +489,10 @@
         statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
         statusText.innerText = "トラッキング中";
 
-        // Sort hands by X position to reliably separate Left vs Right on screen
         const sortedHands = results.multiHandLandmarks.map(landmarks => {
-          // Landmark 9 is middle finger MCP
           return { landmarks, x: landmarks[9].x, y: landmarks[9].y };
         }).sort((a, b) => a.x - b.x);
 
-        // Draw Skeletal Lines
         if (showSkeleton.checked) {
           sortedHands.forEach((hand, idx) => {
             const color = idx === 0 ? '#00f5d4' : '#f72585';
@@ -453,15 +505,13 @@
           });
         }
 
-        /* Mode 1: "67" Alternating Meme Mode (Requires 2 Hands or alternating single hand positions) */
         if (currentMode === '67') {
           if (numHands >= 2) {
             const hand1Y = sortedHands[0].y;
             const hand2Y = sortedHands[1].y;
-            const relDiff = hand1Y - hand2Y; // Negative when Hand 1 is above Hand 2
+            const relDiff = hand1Y - hand2Y;
 
             if (fastModeEnabled) {
-              // High speed relative difference check with hysteresis
               const diffThreshold = 0.12; 
               if (relDiff < -diffThreshold) {
                 if (state67 === 'stateB' || state67 === 'neutral') {
@@ -475,7 +525,6 @@
                 }
               }
             } else {
-              // Standard fixed threshold state detection
               if (hand1Y < upperThreshold && hand2Y > lowerThreshold) {
                 if (state67 === 'stateB' || state67 === 'neutral') {
                   state67 = 'stateA';
@@ -490,7 +539,6 @@
               }
             }
           } else {
-            // Single hand fallback for 67 mode
             const handY = sortedHands[0].y;
             if (handY < upperThreshold && state67 !== 'up') {
               state67 = 'up';
@@ -500,9 +548,7 @@
             }
           }
         } 
-        /* Mode 2: Simple Vertical Rep Mode */
         else if (currentMode === 'single') {
-          // Calculate average Y position of detected hands
           const avgY = sortedHands.reduce((acc, h) => acc + h.y, 0) / numHands;
 
           if (stateSingle === 'down' && avgY < upperThreshold) {
@@ -517,36 +563,43 @@
 
       } else {
         statusDot.className = "w-2.5 h-2.5 rounded-full bg-slate-500";
-        statusText.innerText = "手を映してください";
+        statusText.innerText = isModelReady ? "手を映してください" : "AIモデル読み込み中";
       }
 
       canvasCtx.restore();
     }
 
-    const handsEngine = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
-
-    handsEngine.setOptions({
-      maxNumHands: 2,
-      modelComplexity: 0, // Model complexity 0 (Lite) for maximum FPS and speed
-      minDetectionConfidence: 0.35, // Lower threshold prevents tracking loss during fast motion blur
-      minTrackingConfidence: 0.35
-    });
-
-    handsEngine.onResults(onResults);
-
-    /* Initialize Camera */
+    /* Direct High-Speed Camera Access */
     async function startCamera() {
       try {
-        const camera = new Camera(videoElement, {
-          onFrame: async () => {
-            await handsEngine.send({ image: videoElement });
+        const loadingText = document.getElementById('loadingText');
+        loadingText.innerText = "カメラを接続中...";
+        loadingOverlay.classList.remove('hidden', 'opacity-0');
+
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(track => track.stop());
+        }
+
+        // Direct hardware acquisition via getUserMedia (Instant preview < 300ms)
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 60, max: 60 }
           },
-          width: 640,
-          height: 480
+          audio: false
         });
-        await camera.start();
+
+        videoElement.srcObject = mediaStream;
+        await videoElement.play();
+
+        // Hide overlay instantly as camera is ready
+        loadingOverlay.classList.add('opacity-0');
+        setTimeout(() => loadingOverlay.classList.add('hidden'), 200);
+
+        // Start processing loop
+        processFrame();
+
       } catch (err) {
         console.error("Camera access failed:", err);
         document.getElementById('loadingText').innerText = "カメラへのアクセスを許可してください";
@@ -554,12 +607,32 @@
       }
     }
 
+    /* Zero-Latency Video Processing Loop */
+    async function processFrame() {
+      if (videoElement.paused || videoElement.ended) return;
+
+      if (isModelReady && !isProcessingFrame && videoElement.readyState >= 2) {
+        isProcessingFrame = true;
+        try {
+          await handsEngine.send({ image: videoElement });
+        } catch (e) {
+          console.error(e);
+        }
+        isProcessingFrame = false;
+      }
+
+      if ('requestVideoFrameCallback' in videoElement) {
+        videoElement.requestVideoFrameCallback(processFrame);
+      } else {
+        requestAnimationFrame(processFrame);
+      }
+    }
+
     document.getElementById('toggleCameraBtn').addEventListener('click', () => {
-      loadingOverlay.classList.remove('hidden', 'opacity-0');
       startCamera();
     });
 
-    // Start on window load
+    // Start immediately on window load
     window.onload = () => {
       startCamera();
     };
