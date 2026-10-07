@@ -75,14 +75,14 @@
   </header>
 
   <!-- Main Container -->
-  <main class="max-w-6xl w-full mx-auto p-4 md:p-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6">
+  <main class="max-w-7xl w-full mx-auto p-3 md:p-6 flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6">
     
-    <!-- Left Column: Camera Viewport -->
-    <div class="lg:col-span-7 flex flex-col space-y-4">
-      <div class="glass-panel rounded-2xl p-3 relative overflow-hidden flex flex-col items-center justify-center min-h-[360px]">
+    <!-- Left Column: Camera Viewport (Expanded Size) -->
+    <div class="lg:col-span-8 flex flex-col space-y-4">
+      <div class="glass-panel rounded-2xl p-3 md:p-4 relative overflow-hidden flex flex-col items-center justify-center min-h-[420px] md:min-h-[520px]">
         
-        <!-- Camera Viewport Container -->
-        <div id="canvasContainer" class="relative w-full aspect-[4/3] rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shadow-inner flex items-center justify-center">
+        <!-- Camera Viewport Container (Enlarged & Wide) -->
+        <div id="canvasContainer" class="relative w-full aspect-[16/10] md:aspect-[16/9] rounded-xl overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl flex items-center justify-center">
           
           <video id="webcam" class="absolute inset-0 w-full h-full object-cover mirror" autoplay playsinline></video>
           <canvas id="output_canvas" class="absolute inset-0 w-full h-full object-cover mirror"></canvas>
@@ -97,12 +97,6 @@
           <div class="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
             <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
             <span id="statusText" class="font-medium text-slate-300">認識準備中</span>
-          </div>
-
-          <!-- Live Status Indicator -->
-          <div class="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-full border border-slate-700 text-xs backdrop-blur-md">
-            <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
-            <span id="statusText" class="font-medium text-slate-300">認識待ち</span>
           </div>
 
           <!-- Hands Detected Indicator -->
@@ -131,6 +125,12 @@
             <span>カメラ再接続</span>
           </button>
         </div>
+
+      </div>
+    </div>
+
+    <!-- Right Column: Counter Dashboard & Settings -->
+    <div class="lg:col-span-4 flex flex-col space-y-4">
 
       </div>
     </div>
@@ -190,12 +190,12 @@
           <div>
             <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
               <span>動かす振り幅（感度）:</span>
-              <span id="sensitivityVal" class="text-amber-400">高感度 (超高速対応)</span>
+              <span id="sensitivityVal" class="text-amber-400">超音速・微小振り対応 (爆速)</span>
             </div>
-            <input type="range" id="sensitivitySlider" min="2" max="12" value="4" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
+            <input type="range" id="sensitivitySlider" min="1" max="10" value="2" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
             <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
-              <span>小さく早く振る (高感度)</span>
-              <span>大きく振る (誤動作防止)</span>
+              <span>手元爆速・極小振り (高感度)</span>
+              <span>大振り・誤反応防止 (低感度)</span>
             </div>
           </div>
         </div>
@@ -242,14 +242,18 @@
     let isSoundOn = true;
     let lastCountTime = 0;
     let speedBpm = 0;
-    const minCountIntervalMs = 50; // Ultra-fast allow up to 20 counts/sec
+    const minCountIntervalMs = 20; // Super high-speed interval (allows up to 50 counts/sec)
 
     // Dynamic Peak-Valley Motion Tracking State
-    let swingDeltaThreshold = 0.04; // 4% screen amplitude threshold
+    let swingDeltaThreshold = 0.02; // 2% screen amplitude default for rapid motion
     let swingState = {
       direction: 'NONE', // 'UP', 'DOWN', or 'NONE'
       extremeY: 0
     };
+
+    // Velocity state for instantaneous acceleration reversal detection
+    let prevMotionY = 0;
+    let velocityY = 0;
 
     // Motion waveform history for visual feedback
     let motionHistory = [];
@@ -283,8 +287,8 @@
     handsEngine.setOptions({
       maxNumHands: 2,
       modelComplexity: 0, // Lite model for maximum speed and high FPS
-      minDetectionConfidence: 0.3,
-      minTrackingConfidence: 0.3
+      minDetectionConfidence: 0.2, // Lower threshold to handle severe motion blur
+      minTrackingConfidence: 0.2
     });
 
     handsEngine.onResults(onResults);
@@ -376,11 +380,11 @@
     const sensitivityVal = document.getElementById('sensitivityVal');
     sensitivitySlider.addEventListener('input', (e) => {
       const val = parseInt(e.target.value, 10);
-      swingDeltaThreshold = val / 100; // 0.02 to 0.12
-      if (val <= 4) {
-        sensitivityVal.innerText = "超高感度 (爆速・微小運動)";
-      } else if (val <= 7) {
-        sensitivityVal.innerText = "標準感度";
+      swingDeltaThreshold = val / 100; // 0.01 to 0.10
+      if (val <= 2) {
+        sensitivityVal.innerText = "超音速・微小振り対応 (爆速)";
+      } else if (val <= 5) {
+        sensitivityVal.innerText = "標準感度 (高速ミーム)";
       } else {
         sensitivityVal.innerText = "低感度 (大きな振り用)";
       }
@@ -442,19 +446,13 @@
       clearTimeout(triggerVisualTimeout);
       triggerVisualTimeout = setTimeout(() => {
         counterCard.classList.remove('ring-4', 'ring-amber-400', 'bg-amber-500/20');
-        countDisplay.classList.remove('scale-125', 'text-amber-400');
-        countDisplay.classList.add('scale-100');
-      }, 100);
-    }
-
-    function updateDisplay() {
-      countDisplay.innerText = count;
-      speedDisplay.innerText = speedBpm;
-      comboDisplay.innerText = combo;
-    }
-
-    /* High-Speed Peak-Valley Motion Tracking Algorithm */
+    /* High-Speed Peak-Valley & Velocity Boosted Motion Tracking */
     function updateMotionTracking(currentY) {
+      // Calculate smoothed motion velocity (Y directional derivative)
+      const deltaY = currentY - prevMotionY;
+      velocityY = (velocityY * 0.2) + (deltaY * 0.8);
+      prevMotionY = currentY;
+
       if (swingState.direction === 'NONE') {
         swingState.direction = 'DOWN';
         swingState.extremeY = currentY;
@@ -465,7 +463,10 @@
         // Hand moving UP (Y position decreasing)
         if (currentY < swingState.extremeY) {
           swingState.extremeY = currentY; // Track highest point
-        } else if (currentY > swingState.extremeY + swingDeltaThreshold) {
+        } else if (
+          (currentY > swingState.extremeY + swingDeltaThreshold) || 
+          (velocityY > 0.025) // Instant velocity flip detection
+        ) {
           // Reversal detected: now moving DOWN
           swingState.direction = 'DOWN';
           swingState.extremeY = currentY;
@@ -475,7 +476,10 @@
         // Hand moving DOWN (Y position increasing)
         if (currentY > swingState.extremeY) {
           swingState.extremeY = currentY; // Track lowest point
-        } else if (currentY < swingState.extremeY - swingDeltaThreshold) {
+        } else if (
+          (currentY < swingState.extremeY - swingDeltaThreshold) || 
+          (velocityY < -0.025) // Instant velocity flip detection
+        ) {
           // Reversal detected: now moving UP
           swingState.direction = 'UP';
           swingState.extremeY = currentY;
