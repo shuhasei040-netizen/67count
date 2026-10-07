@@ -113,7 +113,7 @@
 
           <!-- Gesture Target Helper Overlay -->
           <div id="gestureGuide" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-slate-900/85 px-4 py-2 rounded-xl border border-amber-500/30 text-center backdrop-blur-md transition-all">
-            <p id="guideInstruction" class="text-xs text-amber-300 font-semibold">カメラの前で手を上下に振ってください</p>
+            <p id="guideInstruction" class="text-xs text-amber-300 font-semibold">カメラの前で手を高速で上下に振ってください</p>
           </div>
         </div>
 
@@ -123,7 +123,7 @@
             <label class="inline-flex items-center cursor-pointer">
               <input type="checkbox" id="showSkeleton" class="sr-only peer" checked>
               <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 relative"></div>
-              <span class="ml-2 font-medium text-slate-300">手の枠線描画</span>
+              <span class="ml-2 font-medium text-slate-300">骨格・波形描画</span>
             </label>
           </div>
           <button id="toggleCameraBtn" class="hover:text-amber-400 transition flex items-center space-x-1">
@@ -139,7 +139,7 @@
     <div class="lg:col-span-5 flex flex-col space-y-4">
       
       <!-- Counter Card -->
-      <div class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden pulse-glow">
+      <div id="counterCard" class="glass-panel rounded-2xl p-6 flex flex-col items-center justify-center text-center relative overflow-hidden pulse-glow transition-all duration-150">
         <div class="text-xs font-black uppercase tracking-widest text-amber-400 mb-1">TOTAL "67" COUNT</div>
         
         <!-- Big Number -->
@@ -170,7 +170,7 @@
       <div class="glass-panel rounded-2xl p-5 space-y-4">
         <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center space-x-2">
           <i class="fas fa-sliders-h text-amber-400"></i>
-          <span>カウントモード設定</span>
+          <span>高速判定設定</span>
         </h3>
 
         <!-- Mode Switches -->
@@ -189,27 +189,14 @@
         <div class="space-y-3 pt-2">
           <div>
             <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
-              <span>上判定ライン (上限):</span>
-              <span id="upperVal" class="text-amber-400">40%</span>
+              <span>動かす振り幅（感度）:</span>
+              <span id="sensitivityVal" class="text-amber-400">高感度 (超高速対応)</span>
             </div>
-            <input type="range" id="upperSlider" min="10" max="45" value="40" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
-          </div>
-
-          <div>
-            <div class="flex justify-between text-xs text-slate-300 font-semibold mb-1">
-              <span>下判定ライン (下限):</span>
-              <span id="lowerVal" class="text-amber-400">65%</span>
+            <input type="range" id="sensitivitySlider" min="2" max="12" value="4" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
+            <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
+              <span>小さく早く振る (高感度)</span>
+              <span>大きく振る (誤動作防止)</span>
             </div>
-            <input type="range" id="lowerSlider" min="55" max="90" value="65" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
-          </div>
-
-          <!-- High Speed Mode Toggle -->
-          <div class="pt-3 border-t border-slate-800 flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-300">高速判定モード (爆速相対高低差)</span>
-            <label class="inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="fastModeToggle" class="sr-only peer" checked>
-              <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 relative"></div>
-            </label>
           </div>
         </div>
       </div>
@@ -252,16 +239,21 @@
     let count = 0;
     let combo = 0;
     let currentMode = '67'; // '67' or 'single'
-    let upperThreshold = 0.40;
-    let lowerThreshold = 0.65;
     let isSoundOn = true;
     let lastCountTime = 0;
     let speedBpm = 0;
-    let fastModeEnabled = true;
-    const minCountIntervalMs = 70;
+    const minCountIntervalMs = 50; // Ultra-fast allow up to 20 counts/sec
 
-    let state67 = 'neutral';
-    let stateSingle = 'down';
+    // Dynamic Peak-Valley Motion Tracking State
+    let swingDeltaThreshold = 0.04; // 4% screen amplitude threshold
+    let swingState = {
+      direction: 'NONE', // 'UP', 'DOWN', or 'NONE'
+      extremeY: 0
+    };
+
+    // Motion waveform history for visual feedback
+    let motionHistory = [];
+    let triggerVisualTimeout = null;
 
     // Pre-warming & Direct Stream State
     let isModelReady = false;
@@ -276,6 +268,7 @@
     const countDisplay = document.getElementById('countDisplay');
     const speedDisplay = document.getElementById('speedDisplay');
     const comboDisplay = document.getElementById('comboDisplay');
+    const counterCard = document.getElementById('counterCard');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
     const handCountText = document.getElementById('handCountText');
@@ -289,9 +282,9 @@
 
     handsEngine.setOptions({
       maxNumHands: 2,
-      modelComplexity: 0, // Lite model for maximum speed
-      minDetectionConfidence: 0.35,
-      minTrackingConfidence: 0.35
+      modelComplexity: 0, // Lite model for maximum speed and high FPS
+      minDetectionConfidence: 0.3,
+      minTrackingConfidence: 0.3
     });
 
     handsEngine.onResults(onResults);
@@ -319,16 +312,16 @@
         try {
           const osc = this.ctx.createOscillator();
           const gain = this.ctx.createGain();
-          const baseFreq = 440 + Math.min((pitchMultiplier % 20) * 20, 400);
+          const baseFreq = 480 + ((pitchMultiplier % 15) * 25);
           osc.type = 'sine';
           osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
-          osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.5, this.ctx.currentTime + 0.08);
+          osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.3, this.ctx.currentTime + 0.05);
           gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.05);
           osc.connect(gain);
           gain.connect(this.ctx.destination);
           osc.start();
-          osc.stop(this.ctx.currentTime + 0.08);
+          osc.stop(this.ctx.currentTime + 0.05);
         } catch(e){}
       };
       this.playMilestoneSound = () => {
@@ -340,12 +333,12 @@
             const gain = this.ctx.createGain();
             osc.type = 'triangle';
             osc.frequency.value = freq;
-            gain.gain.setValueAtTime(0.15, this.ctx.currentTime + idx * 0.06);
-            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.06 + 0.2);
+            gain.gain.setValueAtTime(0.15, this.ctx.currentTime + idx * 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + idx * 0.05 + 0.18);
             osc.connect(gain);
             gain.connect(this.ctx.destination);
-            osc.start(this.ctx.currentTime + idx * 0.06);
-            osc.stop(this.ctx.currentTime + idx * 0.06 + 0.2);
+            osc.start(this.ctx.currentTime + idx * 0.05);
+            osc.stop(this.ctx.currentTime + idx * 0.05 + 0.18);
           });
         } catch(e){}
       };
@@ -361,36 +354,36 @@
       soundToggleBtn.classList.toggle('text-slate-500', !isSoundOn);
     });
 
-    if (fastModeToggle) {
-      fastModeToggle.addEventListener('change', (e) => {
-        fastModeEnabled = e.target.checked;
-      });
-    }
-
     /* Mode Switching */
     mode67Btn.addEventListener('click', () => {
       currentMode = '67';
       mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
       modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
       guideInstruction.innerText = "両手を交互に上下（シーソー運動）させてください";
+      swingState = { direction: 'NONE', extremeY: 0 };
     });
 
     modeSingleBtn.addEventListener('click', () => {
       currentMode = 'single';
       modeSingleBtn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 bg-amber-500 text-slate-950 shadow';
       mode67Btn.className = 'py-2.5 px-3 rounded-lg text-xs font-bold transition flex flex-col items-center justify-center space-y-1 text-slate-400 hover:text-white hover:bg-slate-800';
-      guideInstruction.innerText = "手を上限ラインまで上げ、下限ラインまで下げてください";
+      guideInstruction.innerText = "手を上下に早く動かしてください";
+      swingState = { direction: 'NONE', extremeY: 0 };
     });
 
     /* Sensitivity Controls */
-    upperSlider.addEventListener('input', (e) => {
-      upperThreshold = parseFloat(e.target.value) / 100;
-      upperVal.innerText = `${e.target.value}%`;
-    });
-
-    lowerSlider.addEventListener('input', (e) => {
-      lowerThreshold = parseFloat(e.target.value) / 100;
-      lowerVal.innerText = `${e.target.value}%`;
+    const sensitivitySlider = document.getElementById('sensitivitySlider');
+    const sensitivityVal = document.getElementById('sensitivityVal');
+    sensitivitySlider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      swingDeltaThreshold = val / 100; // 0.02 to 0.12
+      if (val <= 4) {
+        sensitivityVal.innerText = "超高感度 (爆速・微小運動)";
+      } else if (val <= 7) {
+        sensitivityVal.innerText = "標準感度";
+      } else {
+        sensitivityVal.innerText = "低感度 (大きな振り用)";
+      }
     });
 
     /* Reset Button */
@@ -398,6 +391,7 @@
       count = 0;
       combo = 0;
       speedBpm = 0;
+      swingState = { direction: 'NONE', extremeY: 0 };
       updateDisplay();
     });
 
@@ -418,9 +412,9 @@
       
       if (lastCountTime > 0) {
         const deltaSec = (now - lastCountTime) / 1000;
-        if (deltaSec < 3.0) {
+        if (deltaSec < 2.5) {
           const currentBpm = Math.round(60 / deltaSec);
-          speedBpm = Math.round((speedBpm * 0.3) + (currentBpm * 0.7));
+          speedBpm = Math.round((speedBpm * 0.2) + (currentBpm * 0.8));
         } else {
           combo = 1;
           speedBpm = 0;
@@ -434,24 +428,60 @@
       if (count === 67 || (count > 0 && count % 50 === 0)) {
         soundFX.playMilestoneSound();
         confetti({
-          particleCount: 100,
-          spread: 70,
+          particleCount: 120,
+          spread: 80,
           origin: { y: 0.6 }
         });
       }
 
+      // Visual trigger burst
+      counterCard.classList.add('ring-4', 'ring-amber-400', 'bg-amber-500/20');
       countDisplay.classList.remove('scale-100');
       countDisplay.classList.add('scale-125', 'text-amber-400');
-      setTimeout(() => {
+      
+      clearTimeout(triggerVisualTimeout);
+      triggerVisualTimeout = setTimeout(() => {
+        counterCard.classList.remove('ring-4', 'ring-amber-400', 'bg-amber-500/20');
         countDisplay.classList.remove('scale-125', 'text-amber-400');
         countDisplay.classList.add('scale-100');
-      }, 150);
+      }, 100);
     }
 
     function updateDisplay() {
       countDisplay.innerText = count;
       speedDisplay.innerText = speedBpm;
       comboDisplay.innerText = combo;
+    }
+
+    /* High-Speed Peak-Valley Motion Tracking Algorithm */
+    function updateMotionTracking(currentY) {
+      if (swingState.direction === 'NONE') {
+        swingState.direction = 'DOWN';
+        swingState.extremeY = currentY;
+        return;
+      }
+
+      if (swingState.direction === 'UP') {
+        // Hand moving UP (Y position decreasing)
+        if (currentY < swingState.extremeY) {
+          swingState.extremeY = currentY; // Track highest point
+        } else if (currentY > swingState.extremeY + swingDeltaThreshold) {
+          // Reversal detected: now moving DOWN
+          swingState.direction = 'DOWN';
+          swingState.extremeY = currentY;
+          triggerIncrement();
+        }
+      } else if (swingState.direction === 'DOWN') {
+        // Hand moving DOWN (Y position increasing)
+        if (currentY > swingState.extremeY) {
+          swingState.extremeY = currentY; // Track lowest point
+        } else if (currentY < swingState.extremeY - swingDeltaThreshold) {
+          // Reversal detected: now moving UP
+          swingState.direction = 'UP';
+          swingState.extremeY = currentY;
+          triggerIncrement();
+        }
+      }
     }
 
     /* MediaPipe Hand Tracker Setup */
@@ -465,34 +495,41 @@
       const w = canvasElement.width;
       const h = canvasElement.height;
 
-      // Upper Threshold Line (Amber)
-      canvasCtx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
-      canvasCtx.lineWidth = 3;
-      canvasCtx.setLineDash([8, 6]);
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(0, h * upperThreshold);
-      canvasCtx.lineTo(w, h * upperThreshold);
-      canvasCtx.stroke();
-
-      // Lower Threshold Line (Pink)
-      canvasCtx.strokeStyle = 'rgba(236, 72, 153, 0.8)';
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(0, h * lowerThreshold);
-      canvasCtx.lineTo(w, h * lowerThreshold);
-      canvasCtx.stroke();
-      canvasCtx.setLineDash([]);
-
       const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
       handCountText.innerText = `${numHands} 手検出`;
 
       if (numHands > 0) {
         statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
-        statusText.innerText = "トラッキング中";
+        statusText.innerText = "高速判定中";
 
         const sortedHands = results.multiHandLandmarks.map(landmarks => {
           return { landmarks, x: landmarks[9].x, y: landmarks[9].y };
         }).sort((a, b) => a.x - b.x);
 
+        // Calculate active motion Y position
+        let currentMotionY = 0;
+
+        if (currentMode === '67') {
+          if (numHands >= 2) {
+            // Relative height diff between Left and Right hands
+            currentMotionY = sortedHands[0].y - sortedHands[1].y;
+          } else {
+            // Fallback for single hand motion blur
+            currentMotionY = sortedHands[0].y;
+          }
+        } else {
+          // Simple Up-Down mode: Average hand Y position
+          currentMotionY = sortedHands.reduce((sum, hand) => sum + hand.y, 0) / numHands;
+        }
+
+        // Process directional peak-valley tracking
+        updateMotionTracking(currentMotionY);
+
+        // Push to motion history waveform
+        motionHistory.push(currentMotionY);
+        if (motionHistory.length > 50) motionHistory.shift();
+
+        // Draw skeleton & landmarks if checked
         if (showSkeleton.checked) {
           sortedHands.forEach((hand, idx) => {
             const color = idx === 0 ? '#00f5d4' : '#f72585';
@@ -503,61 +540,21 @@
               canvasCtx.fill();
             });
           });
-        }
 
-        if (currentMode === '67') {
-          if (numHands >= 2) {
-            const hand1Y = sortedHands[0].y;
-            const hand2Y = sortedHands[1].y;
-            const relDiff = hand1Y - hand2Y;
-
-            if (fastModeEnabled) {
-              const diffThreshold = 0.12; 
-              if (relDiff < -diffThreshold) {
-                if (state67 === 'stateB' || state67 === 'neutral') {
-                  state67 = 'stateA';
-                  triggerIncrement();
-                }
-              } else if (relDiff > diffThreshold) {
-                if (state67 === 'stateA') {
-                  state67 = 'stateB';
-                  triggerIncrement();
-                }
-              }
-            } else {
-              if (hand1Y < upperThreshold && hand2Y > lowerThreshold) {
-                if (state67 === 'stateB' || state67 === 'neutral') {
-                  state67 = 'stateA';
-                  triggerIncrement();
-                }
-              } 
-              else if (hand1Y > lowerThreshold && hand2Y < upperThreshold) {
-                if (state67 === 'stateA') {
-                  state67 = 'stateB';
-                  triggerIncrement();
-                }
-              }
-            }
-          } else {
-            const handY = sortedHands[0].y;
-            if (handY < upperThreshold && state67 !== 'up') {
-              state67 = 'up';
-            } else if (handY > lowerThreshold && state67 === 'up') {
-              state67 = 'down';
-              triggerIncrement();
-            }
-          }
-        } 
-        else if (currentMode === 'single') {
-          const avgY = sortedHands.reduce((acc, h) => acc + h.y, 0) / numHands;
-
-          if (stateSingle === 'down' && avgY < upperThreshold) {
-            stateSingle = 'up';
-            guideInstruction.innerText = "そのまま手を出して下ろしてください！";
-          } else if (stateSingle === 'up' && avgY > lowerThreshold) {
-            stateSingle = 'down';
-            guideInstruction.innerText = "GOOD! 再び上に上げてください";
-            triggerIncrement();
+          // Draw real-time motion sparkline / wave on canvas
+          if (motionHistory.length > 1) {
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = '#f59e0b';
+            canvasCtx.lineWidth = 3;
+            const step = w / 50;
+            motionHistory.forEach((val, i) => {
+              const x = i * step;
+              // Map val to canvas height offset
+              const mappedY = h * 0.5 + (val * h * 0.8);
+              if (i === 0) canvasCtx.moveTo(x, mappedY);
+              else canvasCtx.lineTo(x, mappedY);
+            });
+            canvasCtx.stroke();
           }
         }
 
