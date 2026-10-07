@@ -10,8 +10,6 @@ html,body{height:100%;background:#000;color:#fff;font-family:system-ui,-apple-sy
 button{font:inherit;color:inherit;cursor:pointer}
 #v{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
 #n{display:inline-block;font-size:clamp(100px,30vw,360px);font-weight:900;line-height:1;text-shadow:0 4px 30px #000,0 0 8px #000}
-#n.pop{animation:pop .1s ease-out}
-@keyframes pop{0%{transform:scale(1.18);color:#fbbf24}100%{transform:scale(1)}}
 .center{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
 #arrow{font-size:36px;text-shadow:0 2px 10px #000;height:44px}
 .top{position:fixed;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;justify-content:space-between;align-items:center}
@@ -74,9 +72,9 @@ input[type=range]{width:110px;accent-color:#f59e0b}
 const $=id=>document.getElementById(id);
 const video=$('v'),nEl=$('n'),msgEl=$('msg'),arrow=$('arrow');
 
-const WID=64,MINF=4,MINC=2,EPS=80,MIN_INT=6,HOLD=600;
-let count=0,mode='67',sound=true,skinOn=false,mth=5,vth=.04;
-function setLv(){const lv=+$('lv').value;mth=3+2*lv;vth=.02+.02*lv;}
+const WID=64,CMIN=6,HOLD=600,HOLD2=2000,AI_GAP=200,AGE=400;
+let count=0,mode='67',sound=true,skinOn=false,mth=5,amp=.02;
+function setLv(){const lv=+$('lv').value;mth=3+1.5*lv;amp=.012+.008*lv;}
 
 let actx=null,lastSnd=0;
 function audio(){
@@ -96,9 +94,9 @@ function beep(){
   }catch(e){}
 }
 
-/* 手の検出(MediaPipe)：直近0.6秒に手があった範囲だけ判定 */
+/* ① 手の検出(MediaPipe)：手の周りだけを判定エリアにする */
 const slots=[{h:[]},{h:[]}];
-let hands=null,aiReady=false,aiFailed=false,busy=false,busySince=0;
+let hands=null,aiReady=false,aiFailed=false,busy=false,busySince=0,lastAi=0;
 (async function(){
   try{
     await window.__handsLib;
@@ -128,42 +126,27 @@ function onHands(res){
 }
 function put(k,b,t){slots[k].h.push({t,x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1});}
 const cenX=r=>(r.x0+r.x1)/2;
-function roiOf(s,now){
-  const h=s.h;while(h.length&&now-h[0].t>HOLD)h.shift();
-  if(!h.length)return null;
-  let x0=1,y0=1,x1=0,y1=0;
-  for(const e of h){if(e.x0<x0)x0=e.x0;if(e.y0<y0)y0=e.y0;if(e.x1>x1)x1=e.x1;if(e.y1>y1)y1=e.y1;}
-  return {x0:Math.max(0,x0-.06),y0:Math.max(0,y0-.1),x1:Math.min(1,x1+.06),y1:Math.min(1,y1+.1)};
+function roiOf(s,now,hold){
+  const h=s.h;while(h.length&&now-h[0].t>HOLD2)h.shift();
+  hold=hold||HOLD;
+  let x0=1,y0=1,x1=0,y1=0,any=false;
+  for(const e of h){if(now-e.t>hold)continue;any=true;if(e.x0<x0)x0=e.x0;if(e.y0<y0)y0=e.y0;if(e.x1>x1)x1=e.x1;if(e.y1>y1)y1=e.y1;}
+  if(!any)return null;
+  return {x0:Math.max(0,x0-.08),y0:Math.max(0,y0-.18),x1:Math.min(1,x1+.08),y1:Math.min(1,y1+.18)};
 }
 
-/* 判定エリア内の縦方向の速度(オプティカルフロー) */
-let W=0,H=0,Wc=0,Hc=0,pg,cg,m,sk,psk,pgc,cgc,mc,cv,cx,ready=false,hasPrev=false;
+/* ② 判定エリア内で「動いた画素の上下位置」を毎フレーム求める */
+let W=0,H=0,pg,cg,m,sk,psk,cv,cx,ready=false,hasPrev=false;
 function init(vw,vh){
-  W=WID;H=2*Math.round(W*vh/vw/2);Wc=W>>1;Hc=H>>1;
+  W=WID;H=Math.max(16,Math.round(W*vh/vw));
   pg=new Float32Array(W*H);cg=new Float32Array(W*H);m=new Uint8Array(W*H);
   sk=new Uint8Array(W*H);psk=new Uint8Array(W*H);
-  pgc=new Float32Array(Wc*Hc);cgc=new Float32Array(Wc*Hc);mc=new Uint8Array(Wc*Hc);
   cv=document.createElement('canvas');cv.width=W;cv.height=H;
   cx=cv.getContext('2d',{willReadFrequently:true});
   hasPrev=false;ready=true;
 }
-const F=new Float64Array(6),C=new Float64Array(6);
-function flow(pg,cg,m,w,h,o){
-  o.fill(0);
-  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
-    const i=y*w+x,s=m[i];
-    if(!s)continue;
-    const it=cg[i]-pg[i];
-    if(it<mth&&it>-mth)continue;
-    const iy=((cg[i+w]-cg[i-w])+(pg[i+w]-pg[i-w]))*.25;
-    const j=(s-1)*3;o[j]+=iy*it;o[j+1]+=iy*iy;o[j+2]++;
-  }
-}
-const clamp=v=>v>8?8:v<-8?-8:v;
-const vel=(a,b,n,mn)=>n>=mn?clamp(-a/(b+EPS)):0;
-function pick(vf,vc){vc*=2;if(Math.abs(vc)>3)return vc;return(Math.abs(vc)>Math.abs(vf)&&vc*vf>0)?vc:vf;}
-
-let lastMove=0,state='';
+const yp=[.5,.5],ya=[-1e9,-1e9],sd=[0,0],sn=[0,0],sw=[0,0],sy=[0,0],sc=[0,0];
+let lastMove=0,state='',tracking=false;
 function analyze(t){
   cx.drawImage(video,0,0,W,H);
   const d=cx.getImageData(0,0,W,H).data,n=W*H;
@@ -176,7 +159,8 @@ function analyze(t){
   m.fill(0);
   let has;
   if(aiReady){
-    const rois=[roiOf(slots[0],t),roiOf(slots[1],t)];
+    const hold=(t-lastMove<500)?HOLD2:HOLD;
+    const rois=[roiOf(slots[0],t,hold),roiOf(slots[1],t,hold)];
     for(let k=0;k<2;k++){
       const r=rois[k];if(!r)continue;
       const x0=Math.floor(r.x0*W),x1=Math.ceil(r.x1*W),y0=Math.floor(r.y0*H),y1=Math.ceil(r.y1*H);
@@ -193,41 +177,51 @@ function analyze(t){
     has=[true,true];
     state=aiFailed?'AI読込失敗：全画面判定':'AI準備中：全画面判定';
   }
-  for(let y=0;y<Hc;y++)for(let x=0;x<Wc;x++){
-    const i=2*y*W+2*x,k=y*Wc+x;
-    cgc[k]=(cg[i]+cg[i+1]+cg[i+W]+cg[i+W+1])*.25;
-    mc[k]=m[i]||m[i+1]||m[i+W]||m[i+W+1];
-  }
-  if(hasPrev&&(has[0]||has[1])){
-    flow(pg,cg,m,W,H,F);
-    flow(pgc,cgc,mc,Wc,Hc,C);
-    const v=[0,0];
-    for(let j=0;j<2;j++){
-      v[j]=pick(vel(F[j*3],F[j*3+1],F[j*3+2],MINF),vel(C[j*3],C[j*3+1],C[j*3+2],MINC));
-      if(F[j*3+2]>=MINF||C[j*3+2]>=MINC)lastMove=t;
+  tracking=has[0]||has[1];
+  if(hasPrev&&tracking){
+    sd[0]=sd[1]=sn[0]=sn[1]=0;
+    for(let i=0;i<n;i++){const s=m[i];if(s){sd[s-1]+=cg[i]-pg[i];sn[s-1]++;}}
+    const o0=sn[0]?sd[0]/sn[0]:0,o1=sn[1]?sd[1]/sn[1]:0;   // 明るさの全体変化を除去
+    sw[0]=sw[1]=sy[0]=sy[1]=sc[0]=sc[1]=0;
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+      const i=y*W+x,s=m[i];if(!s)continue;
+      let dd=cg[i]-pg[i]-(s===1?o0:o1);if(dd<0)dd=-dd;
+      if(dd<mth)continue;
+      const k=s-1;sw[k]+=dd;sy[k]+=dd*y;sc[k]++;
     }
-    let s;
-    if(has[0]&&has[1])s=mode==='67'?(v[0]-v[1])*.5:(v[0]+v[1])*.5;
-    else s=has[0]?v[0]:v[1];
-    step(s,t);
-  }
-  let q=pg;pg=cg;cg=q;q=pgc;pgc=cgc;cgc=q;const u=psk;psk=sk;sk=u;hasPrev=true;
+    for(let k=0;k<2;k++)if(has[k]&&sc[k]>=CMIN){yp[k]=sy[k]/sw[k]/H;ya[k]=t;lastMove=t;}
+    track(t,has);
+  }else if(!tracking){dir=0;pk=0;arrow.textContent='・';}
+  let q=pg;pg=cg;cg=q;const u=psk;psk=sk;sk=u;hasPrev=true;
 }
 
-/* カウント(速度の向きが反転するたびに+1) */
-let dir=0,sv=0,lastFire=0,dirty=false;
-function step(v,t){
-  if(t-lastMove>350){dir=0;sv=0;}
-  sv=sv*.1+v*.9;
-  if(dir===0){if(sv>vth)dir=1;else if(sv<-vth)dir=-1;}
-  else if(dir===1&&sv<-vth){dir=-1;fire(t);}
-  else if(dir===-1&&sv>vth){dir=1;fire(t);}
-  arrow.textContent=sv>vth?'▼':sv<-vth?'▲':'・';
+/*TRK*/
+/* ③ 位置の折り返し(山と谷)を検出してカウント。速度ではなく位置を見るので速くても安定 */
+let dir=0,lo=0,hi=0,ext=0,pk=0,lastFire=0,dirty=false;
+function track(t,has){
+  const v0=has[0]&&t-ya[0]<AGE,v1=has[1]&&t-ya[1]<AGE;
+  let P=0,key=0;
+  if(v0&&v1){key=3;P=mode==='67'?yp[0]-yp[1]:(yp[0]+yp[1])/2;}
+  else if(v0){key=1;P=yp[0];}
+  else if(v1){key=2;P=yp[1];}
+  if(!key||key!==pk||t-lastMove>350){pk=key;dir=0;lo=hi=P;arrow.textContent='・';if(!key)return;}
+  const A=(key===3&&mode==='67')?amp*2:amp;
+  if(dir===0){
+    if(P<lo)lo=P;if(P>hi)hi=P;
+    if(P-lo>A){dir=1;ext=P;}else if(hi-P>A){dir=-1;ext=P;}
+  }else if(dir===1){
+    if(P>ext)ext=P;else if(ext-P>A){dir=-1;ext=P;fire(t);}
+  }else{
+    if(P<ext)ext=P;else if(P-ext>A){dir=1;ext=P;fire(t);}
+  }
+  arrow.textContent=dir===1?'▼':dir===-1?'▲':'・';
 }
-function fire(t){if(t-lastFire<MIN_INT)return;lastFire=t;count++;dirty=true;beep();}
+function fire(t){lastFire=t;count++;dirty=true;beep();}
+/*END*/
 
 /* フレームループ */
 let gen=0,lastTime=-1,frames=0,fpsT=performance.now();
+const POP=[{transform:'scale(1.15)',color:'#fbbf24'},{transform:'scale(1)',color:'#fff'}];
 function loop(){
   const g=++gen;
   const sched=cb=>video.requestVideoFrameCallback?video.requestVideoFrameCallback(cb):requestAnimationFrame(cb);
@@ -237,10 +231,13 @@ function loop(){
     if(video.readyState>=2&&video.videoWidth&&video.currentTime!==lastTime){
       if(!ready)init(video.videoWidth,video.videoHeight);
       lastTime=video.currentTime;frames++;
-      if(busy&&now-busySince>1500)busy=false;
-      if(aiReady&&!busy){busy=true;busySince=now;hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});}
       analyze(now);
-      if(dirty){dirty=false;nEl.textContent=count;nEl.classList.remove('pop');void nEl.offsetWidth;nEl.classList.add('pop');}
+      if(dirty){dirty=false;nEl.textContent=count;nEl.animate(POP,{duration:90});}
+      if(busy&&now-busySince>1500)busy=false;
+      if(aiReady&&!busy&&(!tracking||now-lastAi>AI_GAP)){
+        busy=true;busySince=lastAi=now;
+        hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});
+      }
     }
     if(now-fpsT>=1000){$('st').textContent=Math.round(frames*1000/(now-fpsT))+' fps ・ '+state;frames=0;fpsT=now;}
     sched(tick);
@@ -271,8 +268,8 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 /* UI */
-function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');dir=0;sv=0;}
-function reset(){count=0;nEl.textContent=0;dir=0;sv=0;}
+function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');dir=0;pk=0;}
+function reset(){count=0;nEl.textContent=0;dir=0;pk=0;}
 $('m67').onclick=()=>setMode('67');
 $('m1').onclick=()=>setMode('1');
 $('sk').onclick=()=>{skinOn=!skinOn;$('sk').classList.toggle('on',skinOn);};
