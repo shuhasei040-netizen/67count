@@ -196,6 +196,15 @@
             </div>
             <input type="range" id="lowerSlider" min="55" max="90" value="65" class="w-full accent-amber-400 bg-slate-700 h-1.5 rounded-lg cursor-pointer">
           </div>
+
+          <!-- High Speed Mode Toggle -->
+          <div class="pt-3 border-t border-slate-800 flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-300">高速判定モード (爆速相対高低差)</span>
+            <label class="inline-flex items-center cursor-pointer">
+              <input type="checkbox" id="fastModeToggle" class="sr-only peer" checked>
+              <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500 relative"></div>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -233,67 +242,6 @@
   </footer>
 
   <script>
-    /* Web Audio Synthesizer for SFX */
-    class SoundEffects {
-      constructor() {
-        this.ctx = null;
-        this.enabled = true;
-      }
-
-      init() {
-        if (!this.ctx) {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          this.ctx = new AudioContext();
-        }
-      }
-
-      playCountSound(count) {
-        if (!this.enabled) return;
-        this.init();
-        if (this.ctx.state === 'suspended') {
-          this.ctx.resume();
-        }
-
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-
-        // Higher pitch for combo/higher count
-        const baseFreq = 440 + ((count % 12) * 30);
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(baseFreq, this.ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.5, this.ctx.currentTime + 0.1);
-
-        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
-
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        osc.start();
-        osc.stop(this.ctx.currentTime + 0.15);
-      }
-
-      playMilestoneSound() {
-        if (!this.enabled) return;
-        this.init();
-        const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
-        notes.forEach((freq, idx) => {
-          setTimeout(() => {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'triangle';
-            osc.frequency.value = freq;
-            gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            osc.start();
-            osc.stop(this.ctx.currentTime + 0.3);
-          }, idx * 80);
-        });
-      }
-    }
-
     /* Application State Variables */
     let count = 0;
     let combo = 0;
@@ -303,12 +251,8 @@
     let isSoundOn = true;
     let lastCountTime = 0;
     let speedBpm = 0;
-
-    // States for tracking movement
-    // 67 mode: 'left_up_right_down' vs 'right_up_left_down'
-    let state67 = 'neutral';
-    // Single mode state: 'up' vs 'down'
-    let stateSingle = 'down';
+    let fastModeEnabled = true;
+    const minCountIntervalMs = 70; // Minimum interval (70ms) to allow super fast counting without glitching
 
     const soundFX = new SoundEffects();
 
@@ -334,6 +278,7 @@
     const lowerSlider = document.getElementById('lowerSlider');
     const upperVal = document.getElementById('upperVal');
     const lowerVal = document.getElementById('lowerVal');
+    const fastModeToggle = document.getElementById('fastModeToggle');
     const showSkeleton = document.getElementById('showSkeleton');
     const resetBtn = document.getElementById('resetBtn');
     const helpBtn = document.getElementById('helpBtn');
@@ -349,6 +294,12 @@
       soundToggleBtn.classList.toggle('text-amber-400', isSoundOn);
       soundToggleBtn.classList.toggle('text-slate-500', !isSoundOn);
     });
+
+    if (fastModeToggle) {
+      fastModeToggle.addEventListener('change', (e) => {
+        fastModeEnabled = e.target.checked;
+      });
+    }
 
     /* Mode Switching */
     mode67Btn.addEventListener('click', () => {
@@ -391,15 +342,20 @@
 
     /* Count Increment Logic */
     function triggerIncrement() {
+      const now = Date.now();
+      // Lockout prevention for frame stuttering on high speed gestures
+      if (lastCountTime > 0 && (now - lastCountTime) < minCountIntervalMs) {
+        return;
+      }
+
       count++;
       combo++;
       
-      const now = Date.now();
       if (lastCountTime > 0) {
         const deltaSec = (now - lastCountTime) / 1000;
-        if (deltaSec < 2.5) {
+        if (deltaSec < 3.0) {
           const currentBpm = Math.round(60 / deltaSec);
-          speedBpm = Math.round((speedBpm * 0.4) + (currentBpm * 0.6));
+          speedBpm = Math.round((speedBpm * 0.3) + (currentBpm * 0.7));
         } else {
           combo = 1;
           speedBpm = 0;
@@ -502,19 +458,35 @@
           if (numHands >= 2) {
             const hand1Y = sortedHands[0].y;
             const hand2Y = sortedHands[1].y;
+            const relDiff = hand1Y - hand2Y; // Negative when Hand 1 is above Hand 2
 
-            // State A: Hand 1 UP & Hand 2 DOWN
-            if (hand1Y < upperThreshold && hand2Y > lowerThreshold) {
-              if (state67 === 'stateB' || state67 === 'neutral') {
-                state67 = 'stateA';
-                triggerIncrement();
+            if (fastModeEnabled) {
+              // High speed relative difference check with hysteresis
+              const diffThreshold = 0.12; 
+              if (relDiff < -diffThreshold) {
+                if (state67 === 'stateB' || state67 === 'neutral') {
+                  state67 = 'stateA';
+                  triggerIncrement();
+                }
+              } else if (relDiff > diffThreshold) {
+                if (state67 === 'stateA') {
+                  state67 = 'stateB';
+                  triggerIncrement();
+                }
               }
-            } 
-            // State B: Hand 1 DOWN & Hand 2 UP
-            else if (hand1Y > lowerThreshold && hand2Y < upperThreshold) {
-              if (state67 === 'stateA') {
-                state67 = 'stateB';
-                triggerIncrement();
+            } else {
+              // Standard fixed threshold state detection
+              if (hand1Y < upperThreshold && hand2Y > lowerThreshold) {
+                if (state67 === 'stateB' || state67 === 'neutral') {
+                  state67 = 'stateA';
+                  triggerIncrement();
+                }
+              } 
+              else if (hand1Y > lowerThreshold && hand2Y < upperThreshold) {
+                if (state67 === 'stateA') {
+                  state67 = 'stateB';
+                  triggerIncrement();
+                }
               }
             }
           } else {
@@ -557,9 +529,9 @@
 
     handsEngine.setOptions({
       maxNumHands: 2,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      modelComplexity: 0, // Model complexity 0 (Lite) for maximum FPS and speed
+      minDetectionConfidence: 0.35, // Lower threshold prevents tracking loss during fast motion blur
+      minTrackingConfidence: 0.35
     });
 
     handsEngine.onResults(onResults);
