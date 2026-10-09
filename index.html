@@ -14,15 +14,22 @@ button{font:inherit;color:inherit;cursor:pointer}
 #n.pop{animation:pop .09s ease-out}
 @keyframes pop{0%{transform:scale(1.15);color:#fbbf24}100%{transform:scale(1)}}
 .center{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
-#arrow{font-size:36px;text-shadow:0 2px 10px #000;height:44px}
+#arrow{font-size:30px;text-shadow:0 2px 10px #000;height:44px;color:#fbbf24}
 .top{position:fixed;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;justify-content:space-between;align-items:center}
+#gr{position:fixed;left:10px;top:calc(max(10px,env(safe-area-inset-top)) + 38px);width:150px;height:46px;border-radius:8px;background:rgba(15,23,42,.7);border:1px solid rgba(255,255,255,.2);pointer-events:none}
 .bar{position:fixed;left:0;right:0;bottom:0;padding:10px 10px max(10px,env(safe-area-inset-bottom));display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;background:linear-gradient(transparent,rgba(0,0,0,.75))}
 .b{padding:10px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(15,23,42,.75);font-weight:700;font-size:14px}
 .b.on{background:#f59e0b;color:#0f172a;border-color:#f59e0b}
 .b.sq{width:44px;height:44px;padding:0;font-size:18px}
 .pill{font-size:12px;padding:5px 10px;border-radius:99px;background:rgba(15,23,42,.8);border:1px solid rgba(255,255,255,.2)}
 label{font-size:12px;display:flex;align-items:center;gap:6px;background:rgba(15,23,42,.75);padding:8px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.25)}
-input[type=range]{width:110px;accent-color:#f59e0b}
+input[type=range]{width:120px;accent-color:#f59e0b}
+#tm{position:fixed;top:calc(max(10px,env(safe-area-inset-top)) + 38px);left:50%;transform:translateX(-50%);font-size:30px;font-weight:900;font-variant-numeric:tabular-nums;text-shadow:0 2px 10px #000;display:none;pointer-events:none;padding:2px 14px;border-radius:99px;background:rgba(15,23,42,.7)}
+#ch{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;text-align:center;background:rgba(0,0,0,.6);z-index:5;padding:24px}
+#ch.on{display:flex}
+#ch.cd{pointer-events:none;background:rgba(0,0,0,.25)}
+#ch .big{font-size:clamp(90px,28vw,260px);font-weight:900;color:#fbbf24;line-height:1;text-shadow:0 4px 30px #000}
+#ch .sub{font-size:18px;font-weight:700;white-space:pre-line;line-height:1.7;text-shadow:0 2px 10px #000}
 #msg{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0f172a;color:#fbbf24;font-weight:700;line-height:1.7;white-space:pre-line}
 #msg:empty{display:none}
 </style>
@@ -66,11 +73,14 @@ input[type=range]{width:110px;accent-color:#f59e0b}
     <button class="b sq" id="fs" title="全画面 (F)">⛶</button>
   </span>
 </div>
+<canvas id="gr" width="150" height="46"></canvas>
+<div id="tm">10.0</div>
+<div id="ch"><div class="big" id="chb"></div><div class="sub" id="chs"></div>
+  <div id="chbtn" style="display:none;gap:8px"><button class="b on" id="again">もう一度</button><button class="b" id="close">閉じる</button></div></div>
 
 <div class="bar">
-  <button class="b on" id="m67">67 交互</button>
-  <button class="b" id="m1">上下</button>
   <label>感度 高<input type="range" id="lv" min="1" max="10" value="2">低</label>
+  <button class="b" id="ten" title="10秒で何回できるか挑戦 (T)">⏱ 10秒</button>
   <button class="b" id="fast" title="露光を短くして残像を減らす（対応端末のみ）">⚡高速カメラ</button>
   <button class="b" id="rs">リセット</button>
 </div>
@@ -81,20 +91,18 @@ input[type=range]{width:110px;accent-color:#f59e0b}
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
-const video=$('v'), nEl=$('n'), msgEl=$('msg'), arrow=$('arrow'), ov=$('ov'), ovx=ov.getContext('2d');
+const video=$('v'), nEl=$('n'), msgEl=$('msg'), arrow=$('arrow'), ov=$('ov'), ovx=ov.getContext('2d'), gr=$('gr'), grx=gr.getContext('2d');
 
 /* ---------- 設定 ---------- */
-const WID=80,        // 解析解像度（横）
-      MINPIX=5,      // 手のシルエットとみなす最小画素数
-      MIN_INT=8,     // 連続カウントの最小間隔(ms)
-      HOLD=1500,     // 手が検出されなくなってもエリアを残す時間(ms)
-      PA=.97,        // 位置の平滑化（大きいほど遅延が少ない）
-      HOLDP=120,     // 一瞬手の位置が取れなくても保持する時間(ms)
-      HANDS_INT=110, // 手検出AIを走らせる間隔(ms)。重い処理を間引いてフレーム落ちを防ぐ
-      IDLE=450;      // この時間動きが無ければ状態リセット
-let count=0, mode='67', sound=true, ovOn=true;
-let dth=12, thBase=.032, holdMs=HOLD;
-function setLv(){const lv=+$('lv').value; dth=5+1.2*lv; thBase=.006+.01*lv;}
+const WID=96,        // 解析解像度（横）
+      MIN_INT=40,    // 連続カウントの最小間隔(ms)
+      HOLD=1500,     // 手の判定エリアを残す時間(ms)
+      OUTW=.3,       // 判定エリア外の動きの重み（手検出が外れても止まらない）
+      HANDS_INT=150; // 手検出AIを走らせる間隔(ms)
+let count=0, sound=true, ovOn=true;
+const DUR=10000, ch={state:'idle',end:0,timer:0};   // 10秒チャレンジ
+let dth=5, minR=.14, holdMs=HOLD;
+function setLv(){const lv=+$('lv').value; dth=3+lv; minR=.04+.05*lv;}
 
 /* ---------- サウンド ---------- */
 let actx=null, lastSnd=0;
@@ -114,9 +122,18 @@ function beep(){
     o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+.05);
   }catch(e){}
 }
+function tone(f,d){
+  if(!sound)return;const c=audio();if(!c)return;
+  try{
+    const o=c.createOscillator(),g=c.createGain(),t=c.currentTime;
+    o.frequency.value=f;g.gain.setValueAtTime(.25,t);g.gain.exponentialRampToValueAtTime(.01,t+d);
+    o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+d+.02);
+  }catch(e){}
+}
 
 /* =====================================================================
-   ① 手の場所を探す（MediaPipe Hands）→ 手の「判定エリア」
+   ① 手の場所を探す（MediaPipe Hands）… 動きを見るエリアの「補助」
+      外れても止まらない（エリア外も重みを下げて見る）
    ===================================================================== */
 const slots=[{h:[]},{h:[]}];
 let hands=null, aiReady=false, aiFailed=false, busy=false, busySince=0;
@@ -158,135 +175,108 @@ function roiOf(s,now){
 }
 
 /* =====================================================================
-   ② 判定エリア内で「動いているもの（手）」の縦位置を毎フレーム直接測る
-      ・背景差分（動いている手のピクセルは背景に混ぜない＝残像が焼き付かない）で
-        その瞬間の手の位置を毎フレーム絶対位置として測る
-        → 1フレームごとに上下が入れ替わる超高速でも信号が消えない
-      ・手検出が外れたら全画面（左右分割）判定に自動で切り替わる
+   ② 「縦方向の動きの強さ」を毎フレーム1つの数値にする
+      ・直前フレームとの差分のうち、縦方向の動き（横向きの縁のズレ）だけを重視
+      ・手の位置は測らない → ブレ・暗さ・低画質・超高速でも波が残る
+      ・上下に1回動くたびに、この強さは「強→弱→強」と1往復する
    ===================================================================== */
-let W=0,H=0,cg,pg,bg,sc,m,cv,cx,ovImg,ready=false,hasPrev=false;
+let W=0,H=0,cg,pg,m,cv,cx,ovImg,ready=false,hasPrev=false,state='';
 function init(vw,vh){
   W=WID;H=2*Math.round(W*vh/vw/2);
-  cg=new Float32Array(W*H);pg=new Float32Array(W*H);bg=new Float32Array(W*H);sc=new Uint8Array(W*H);m=new Uint8Array(W*H);
+  cg=new Float32Array(W*H);pg=new Float32Array(W*H);m=new Uint8Array(W*H);
   cv=document.createElement('canvas');cv.width=W;cv.height=H;
   cx=cv.getContext('2d',{willReadFrequently:true});
   ov.width=W;ov.height=H;ovImg=ovx.createImageData(W,H);
   hasPrev=false;ready=true;
 }
-const S=new Float64Array(6);          // [重み和, 重みY和, 画素数] × 2手
-const ps=[0,0], hasP=[false,false];
-let lastKey=-1, lastMove=0, state='';
-const lastUpd=[0,0];
+const HN=120, hist=new Float32Array(HN); let hp=0;
 
 function analyze(t){
   cx.drawImage(video,0,0,W,H);
   const d=cx.getImageData(0,0,W,H).data, n=W*H;
   for(let i=0,j=0;i<n;i++,j+=4)cg[i]=.299*d[j]+.587*d[j+1]+.114*d[j+2];
-  if(!hasPrev){pg.set(cg);bg.set(cg);sc.fill(0);}
-  let gb=0,gp=0;for(let i=0;i<n;i++){gb+=cg[i]-bg[i];gp+=cg[i]-pg[i];}gb/=n;gp/=n;   // 画面全体の明るさ変化を除去
+  if(!hasPrev)pg.set(cg);
+  let gp=0;for(let i=0;i<n;i++)gp+=cg[i]-pg[i];gp/=n;        // 画面全体の明るさ変化（自動露出など）を除去
 
-  /* 判定エリアのマスク（手検出が無ければ全画面を左右に分けて判定） */
   m.fill(0);
-  const rois=[null,null]; let fallback=!aiReady;
-  if(aiReady){
-    for(let k=0;k<2;k++){
-      const r=roiOf(slots[k],t);rois[k]=r;
-      if(!r)continue;
-      const x0=Math.floor(r.x0*W),x1=Math.ceil(r.x1*W),y0=Math.floor(r.y0*H),y1=Math.ceil(r.y1*H);
-      for(let y=y0;y<y1&&y<H;y++)for(let x=x0;x<x1&&x<W;x++){const i=y*W+x;if(!m[i])m[i]=k+1;}
-    }
-    if(!rois[0]&&!rois[1])fallback=true;
+  const rois=[roiOf(slots[0],t),roiOf(slots[1],t)];
+  const useRoi=aiReady&&!!(rois[0]||rois[1]);
+  if(useRoi)for(let k=0;k<2;k++){
+    const r=rois[k];if(!r)continue;
+    const x0=Math.floor(r.x0*W),x1=Math.ceil(r.x1*W),y0=Math.floor(r.y0*H),y1=Math.ceil(r.y1*H);
+    for(let y=y0;y<y1&&y<H;y++)for(let x=x0;x<x1&&x<W;x++)m[y*W+x]=1;
   }
-  if(fallback){const half=W>>1;for(let y=0;y<H;y++)for(let x=0;x<W;x++)m[y*W+x]=x<half?1:2;}
-  state=!aiReady?(aiFailed?'AI読込失敗：全画面判定':'AI準備中：全画面判定'):fallback?'手未検出：全画面判定':'手を追跡中';
-  const has=fallback?[true,true]:[!!rois[0],!!rois[1]];
-  const minp=fallback?10:MINPIX;
+  state=!aiReady?(aiFailed?'AIなし：全画面':'AI準備中：全画面'):useRoi?'手を追跡中':'手未検出：全画面';
 
-  /* 背景差分 → 手のシルエットの縦重心（＋背景の更新）*/
-  S.fill(0);
   const od=ovOn?ovImg.data:null;if(od)od.fill(0);
-  const sth=dth*.7;
-  for(let y=0;y<H;y++){
+  let E=0;
+  for(let y=1;y<H-1;y++){
     const row=y*W;
-    for(let x=0;x<W;x++){
-      const i=row+x,c=cg[i];
-      let db=c-bg[i]-gb;if(db<0)db=-db;
-      let dp=c-pg[i]-gp;if(dp<0)dp=-dp;
-      if(dp<sth){if(sc[i]<255)sc[i]++;}else sc[i]=0;
-      const s=m[i];
-      if(s&&db>dth){
-        const w=db>80?80:db;
-        const j=(s-1)*3;S[j]+=w;S[j+1]+=w*y;S[j+2]++;
-        if(od){const k=i<<2;od[k]=255;od[k+2]=200;od[k+3]=230;}
-      }
-      // 背景更新：動いていない画素だけ。動いている手は混ぜない
-      if(sc[i]>=15)bg[i]+=.2*(c-bg[i]);
-      else if(db<dth)bg[i]+=.03*(c-bg[i]);
+    for(let x=1;x<W-1;x++){
+      const i=row+x;
+      let dd=cg[i]-pg[i]-gp;if(dd<0)dd=-dd;
+      dd-=dth;if(dd<=0)continue;
+      if(dd>60)dd=60;
+      let ix=cg[i+1]-cg[i-1];if(ix<0)ix=-ix;
+      let iy=cg[i+W]-cg[i-W];if(iy<0)iy=-iy;
+      let c=dd*iy/(ix+iy+6);                 // 縦方向の動きを重視（横の動きは弱める）
+      if(useRoi&&!m[i])c*=OUTW;
+      E+=c;
+      if(od&&c>1.5){const k=i<<2;od[k]=255;od[k+2]=200;od[k+3]=230;}
     }
   }
-  const updated=[false,false], valid=[false,false];
-  for(let j=0;j<2;j++){
-    if(has[j]&&S[j*3+2]>=minp&&S[j*3]>0){
-      const p=(S[j*3+1]/S[j*3]+.5)/H;
-      ps[j]=hasP[j]?ps[j]+PA*(p-ps[j]):p;
-      hasP[j]=true;updated[j]=true;lastUpd[j]=t;lastMove=t;
-    }
-    if(!has[j]||t-lastUpd[j]>HOLDP)hasP[j]=false;
-    valid[j]=hasP[j];
-  }
-  const key=(valid[0]?1:0)+(valid[1]?2:0)+(fallback?4:0);
-  if(key!==lastKey){lastKey=key;resetDet();}
-  if(t-lastMove>IDLE)resetDet();
-
-  if(hasPrev&&(updated[0]||updated[1])){
-    let s=null;
-    if(valid[0]&&valid[1])s=mode==='67'?(ps[0]-ps[1])*.5:(ps[0]+ps[1])*.5;
-    else if(valid[0])s=ps[0];
-    else if(valid[1])s=ps[1];
-    if(s!==null)step(s,t);
-  }
-  if(!valid[0]&&!valid[1])arrow.textContent='・';
+  const e=E/n;
+  stepE(e,t);
+  hist[hp]=e;hp=(hp+1)%HN;
 
   if(ovOn){
     ovx.putImageData(ovImg,0,0);
-    if(!fallback){
-      ovx.strokeStyle='#22c55e';ovx.lineWidth=1;
-      for(let k=0;k<2;k++){
-        const r=rois[k];if(!r)continue;
-        ovx.strokeRect(r.x0*W+.5,r.y0*H+.5,(r.x1-r.x0)*W-1,(r.y1-r.y0)*H-1);
-        if(valid[k]){ovx.fillStyle='#fbbf24';ovx.fillRect(r.x0*W,ps[k]*H-.5,(r.x1-r.x0)*W,1.2);}
-      }
-    }else{
-      ovx.fillStyle='#fbbf24';
-      for(let k=0;k<2;k++)if(valid[k])ovx.fillRect(k*(W>>1),ps[k]*H-.5,W>>1,1.2);
-    }
-  }else ovx.clearRect(0,0,W,H);
+    if(useRoi){ovx.strokeStyle='#22c55e';ovx.lineWidth=1;
+      for(const r of rois)if(r)ovx.strokeRect(r.x0*W+.5,r.y0*H+.5,(r.x1-r.x0)*W-1,(r.y1-r.y0)*H-1);}
+    gr.style.display='';drawGraph();
+  }else{ovx.clearRect(0,0,W,H);gr.style.display='none';}
   pg.set(cg);hasPrev=true;
 }
 
-/* ---------- カウント：位置の折り返し（ヒステリシス付きピーク検出）---------- */
-let dir=0,hi=0,lo=0,amp=0,lastFire=0,dirty=false;
-function resetDet(){dir=0;amp=0;hi=lo=0;}
-function step(s,t){
-  // しきい値：基準値を、直近の振幅に応じて小さくも出来る（小さく速い動きに追従）
-  const floor=thBase*.25;
-  const thr=amp>0?Math.max(floor,Math.min(thBase,amp*.3)):thBase;
-  if(dir===0){
-    if(hi===0&&lo===0){hi=lo=s;}
-    if(s>hi)hi=s;if(s<lo)lo=s;
-    if(s-lo>thr){dir=1;hi=s;}
-    else if(hi-s>thr){dir=-1;lo=s;}
-  }else if(dir===1){
-    if(s>hi)hi=s;
-    else if(hi-s>thr){amp=amp?amp*.5+(hi-lo)*.5:(hi-lo);dir=-1;lo=s;fire(t);}
-  }else{
-    if(s<lo)lo=s;
-    else if(s-lo>thr){amp=amp?amp*.5+(hi-lo)*.5:(hi-lo);dir=1;hi=s;fire(t);}
+/* ---------- カウント：動きの強さの波が「谷から立ち上がる」たびに+1 ---------- */
+let eHi=0,eLo=0,eDir=0,eExt=0,thrLine=0,lastFire=0,dirty=false;
+function resetDet(){eHi=eLo=0;eDir=0;eExt=0;}
+function stepE(e,t){
+  // 直近の最大・最小を追って、波の大きさ(range)を知る
+  eHi=e>eHi?e:eHi+(e-eHi)*.05;
+  eLo=e<eLo?e:eLo+(e-eLo)*.05;
+  const range=eHi-eLo;
+  if(range<minR){eDir=0;eExt=e;thrLine=eLo+range*.5;arrow.textContent='・';return;}   // 動きが小さい間は数えない
+  const th=range*.17;                         // 波の大きさに対する相対しきい値（サンプルが粗くても追従）
+  if(eDir<=0){                                // 谷を探している
+    if(e<eExt)eExt=e;
+    else if(e-eExt>th){eDir=1;eExt=e;fire(t);}
+  }else{                                      // 山を探している
+    if(e>eExt)eExt=e;
+    else if(eExt-e>th){eDir=-1;eExt=e;}
   }
-  arrow.textContent=dir===1?'▼':dir===-1?'▲':'・';
+  thrLine=eDir<=0?eExt+th:eExt-th;
+  arrow.textContent=eDir===1?'◆':'・';
 }
 const fireLog=[];
-function fire(t){if(t-lastFire<MIN_INT)return;lastFire=t;count++;dirty=true;fireLog.push(t);beep();}
+function fire(t){
+  if(ch.state==='count'||ch.state==='done')return;          // チャレンジの準備中・終了後は数えない
+  if(ch.state==='run'&&t>ch.end)return;                     // 10秒を過ぎたら数えない
+  if(t-lastFire<MIN_INT)return;lastFire=t;count++;dirty=true;fireLog.push(t);beep();
+}
+
+function drawGraph(){
+  const w=gr.width,h=gr.height;grx.clearRect(0,0,w,h);
+  const sc=1/Math.max(eHi,minR*2);
+  grx.strokeStyle='#38bdf8';grx.lineWidth=1.5;grx.beginPath();
+  for(let k=0;k<HN;k++){
+    const v=hist[(hp+k)%HN],x=k*w/(HN-1),y=h-2-Math.min(1,v*sc)*(h-4);
+    if(k)grx.lineTo(x,y);else grx.moveTo(x,y);
+  }
+  grx.stroke();
+  const ty=h-2-Math.min(1,Math.max(0,thrLine)*sc)*(h-4);
+  grx.strokeStyle='#fbbf24';grx.lineWidth=1;grx.beginPath();grx.moveTo(0,ty);grx.lineTo(w,ty);grx.stroke();
+}
 
 /* ---------- フレームループ（カメラの全フレームを処理）---------- */
 let gen=0,lastTime=-1,frames=0,fpsT=performance.now(),lastHands=0;
@@ -301,7 +291,7 @@ function loop(){
       lastTime=video.currentTime;frames++;
       if(busy&&now-busySince>1500)busy=false;
       holdMs=(now-lastFire<600)?8000:HOLD;            // 高速カウント中は判定エリアを長く保持
-      analyze(now);                                   // 先に解析（遅延を最小化）
+      analyze(now);
       if(dirty){dirty=false;nEl.textContent=count;nEl.classList.remove('pop');void nEl.offsetWidth;nEl.classList.add('pop');}
       if(aiReady&&!busy&&now-lastFire>350&&now-lastHands>=HANDS_INT){   // 高速カウント中はAIを止めてフレーム落ちを防ぐ
         lastHands=now;busy=true;busySince=now;hands.send({image:video}).catch(()=>{}).then(()=>{busy=false;});}
@@ -352,10 +342,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 /* ---------- UI ---------- */
-function setMode(x){mode=x;$('m67').classList.toggle('on',x==='67');$('m1').classList.toggle('on',x!=='67');resetDet();}
 function reset(){count=0;nEl.textContent=0;resetDet();}
-$('m67').onclick=()=>setMode('67');
-$('m1').onclick=()=>setMode('1');
 $('lv').oninput=setLv;
 $('rs').onclick=reset;
 $('fast').onclick=()=>{fast=!fast;$('fast').classList.toggle('on',fast);applyFast();};
@@ -372,8 +359,47 @@ video.addEventListener('dblclick',toggleFS);
 addEventListener('keydown',e=>{
   if(e.ctrlKey||e.metaKey||e.altKey)return;
   const k=e.key.toLowerCase();
-  if(k==='f')toggleFS();else if(k==='r')reset();else if(k==='m')$('snd').click();
+  if(k==='f')toggleFS();else if(k==='t')chStart();else if(k==='r')reset();else if(k==='m')$('snd').click();
 });
+
+/* ---------- 10秒チャレンジ ---------- */
+let best=0;try{best=+localStorage.getItem('best10')||0;}catch(e){}
+function chStart(){
+  clearInterval(ch.timer);audio();
+  ch.state='count';reset();
+  $('ch').className='on cd';$('chbtn').style.display='none';$('chs').textContent='準備して！';
+  let k=3;$('chb').textContent=k;tone(600,.12);
+  $('tm').style.display='block';$('tm').textContent='10.0';
+  ch.timer=setInterval(()=>{
+    k--;
+    if(k>0){$('chb').textContent=k;tone(600,.12);}
+    else{clearInterval(ch.timer);chGo();}
+  },800);
+}
+function chGo(){
+  reset();ch.state='run';ch.end=performance.now()+DUR;
+  $('ch').className='';tone(1000,.25);
+  ch.timer=setInterval(()=>{
+    const left=ch.end-performance.now();
+    if(left<=0)chFinish();else $('tm').textContent=(left/1000).toFixed(1);
+  },40);
+}
+function chFinish(){
+  clearInterval(ch.timer);ch.state='done';
+  $('tm').textContent='0.0';tone(500,.4);
+  const n=count,nb=n>best;
+  if(nb){best=n;try{localStorage.setItem('best10',String(n));}catch(e){}}
+  $('chb').textContent=n+'回';
+  $('chs').textContent='10秒で '+n+'回（'+(n/10).toFixed(1)+'回/秒）\n'+(nb?'🎉 ベスト更新！':'ベスト '+best+'回');
+  $('chbtn').style.display='flex';$('ch').className='on';
+}
+function chClose(){
+  clearInterval(ch.timer);ch.state='idle';
+  $('ch').className='';$('tm').style.display='none';
+}
+$('ten').onclick=chStart;
+$('again').onclick=chStart;
+$('close').onclick=chClose;
 
 setLv();
 start(true);
